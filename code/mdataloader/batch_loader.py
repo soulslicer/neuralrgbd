@@ -117,8 +117,8 @@ class Batch_Loader():
                 self.dataset_batch
                 self.frame_idx_cur - the current frame index in the trajectories 
                 self.dat_arrays - list of dat_array, each dat_array is a list of data items for one local time window, 
-        ''' 
-        assert batch_size > 1
+        '''
+        #assert batch_size > 1
 
         self.batch_size = batch_size
         self.fun_get_paths = fun_get_paths 

@@ -139,7 +139,7 @@ class feature_extraction(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        output      = self.firstconv(x)
+        output      = self.firstconv(x) #
         output_layer1 = self.layer1(output)
         output_raw  = self.layer2(output_layer1)
         output      = self.layer3(output_raw)

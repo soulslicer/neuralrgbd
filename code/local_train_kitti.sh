@@ -8,6 +8,7 @@
 #!/bin/bash
 
 python3 train_KVNet.py \
+    --batch_size 1 \
 		--exp_name kitti/ \
 		--nepoch 20 \
 		--RNet \
@@ -21,4 +22,4 @@ python3 train_KVNet.py \
 		--grad_clip \
 		--grad_clip_max 2. \
 		--dataset kitti \
-		--dataset_path /datasets/kitti \
+		--dataset_path ../data/datasets/kitti/ \

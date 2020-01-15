@@ -310,7 +310,7 @@ def est_swp_volume_v4(feat_img_ref, feat_img_src,
     P_ref_cuda = cam_intrinsic['unit_ray_array_2D'].cuda( torch.cuda.current_device() ) # unit ray array in matrix form on GPU
     d_candi_cuda = torch.from_numpy(d_candi.astype(np.float32)).cuda(torch.cuda.current_device())
 
-    for idx_view in range(feat_img_src.shape[1]):
+    for idx_view in range(feat_img_src.shape[1]): # Iterate each image
         # Get term1 #
         term1 = IntM_tensor.matmul(t[idx_view, :]).reshape(3,1)
         # Get term2 #

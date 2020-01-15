@@ -275,10 +275,10 @@ def main():
 
     d_candi_up = d_candi 
 
-    for iepoch in range(n_epoch): 
+    for iepoch in range(n_epoch):
         BatchScheduler = batch_loader.Batch_Loader(
                 batch_size = batch_size, fun_get_paths = fun_get_paths, 
-                dataset_traj = dataset, nTraj=len(traj_Indx), dataset_name = dataset_name ) 
+                dataset_traj = dataset, nTraj=len(traj_Indx), dataset_name = dataset_name )
 
         for batch_idx in range(len(BatchScheduler)): 
             for frame_count, ref_indx in enumerate( range(BatchScheduler.traj_len) ): 

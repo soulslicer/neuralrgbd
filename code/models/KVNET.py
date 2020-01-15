@@ -99,7 +99,7 @@ class KVNET(nn.Module):
         src_cam_poses - N x V x4 x4 - relative cam poses, N = 1
         BatchIdx - e.g. for 4 gpus: [0,1,2,3], used for indexing list input for multi-gpu training 
         cam_intrinsics - list of cam_intrinsics dict. 
-        BV_predict - NDHW tensor, the predicted BV, from the last reference frame, N=1
+        BV_predict - NDHW tensor, the predicted BV, from the last reference frame, N=1 #[1,64,64,96]
 
         Outputs:
         dmap_cur_refined, dmap_kv_refined, BV_cur, BV_KV
@@ -115,11 +115,17 @@ class KVNET(nn.Module):
             if m_misc.valid_dpv(BV_predict):
                 assert BV_predict.shape[0] == 1 
 
-        # D-Net #
+        # D-Net # (For Features)
         if (self.if_refined is False) or (self.if_refined is True and self.refineNet_name != 'DPV'):
-            BV_cur = self.d_net(ref_frame, src_frames, src_cam_poses, BV_predict = None, debug_ipdb= False)  
-
+            BV_cur = self.d_net(ref_frame, src_frames, src_cam_poses, BV_predict = None, debug_ipdb= False)
         else:
+            """
+            ref_frame: [1,3,256,384]
+            src_frames: [1,4,3,256,384]
+            src_cam_poses: [1,4,4,4]
+            BV_cur: [1,64,64,96]
+            d_net_features: list of 2: [1,64,64,96] [1,32,128,192] - added at append [1,3,256,384]
+            """
             BV_cur, d_net_features = self.d_net(
                     ref_frame, src_frames, src_cam_poses, BV_predict = None, debug_ipdb= False) 
 

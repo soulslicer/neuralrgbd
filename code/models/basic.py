@@ -248,12 +248,12 @@ class D_NET_BASIC(nn.Module):
         else:
             feat_imgs = self.feature_extraction(torch.cat((src_frames[0,...], ref_frame),dim=0))
 
-        feat_imgs_src = feat_imgs[:-1, ...].unsqueeze(0)
-        feat_img_ref = feat_imgs[-1, ...].unsqueeze(0) 
+        feat_imgs_src = feat_imgs[:-1, ...].unsqueeze(0) # [1,4,64,64,96]
+        feat_img_ref = feat_imgs[-1, ...].unsqueeze(0) # [1,64,64,96]
 
         if self.use_img_intensity:
             # Get downsampling rate for image intensity feature #
-            dw_rate = int( ref_frame.shape[3] / feat_img_ref.shape[3] )
+            dw_rate = int( ref_frame.shape[3] / feat_img_ref.shape[3] ) # 4
 
             # Use image intensity as one set of features #
             img_int_feat_ref = F.avg_pool2d( ref_frame, dw_rate)
@@ -262,6 +262,7 @@ class D_NET_BASIC(nn.Module):
             img_int_feats_src = F.avg_pool2d(src_frames[0,...], dw_rate).unsqueeze(0)
             feat_imgs_src = torch.cat( (feat_imgs_src, img_int_feats_src), dim=2 ) # feat_imgs_src size = [NVCHW]
 
+        # feat_imgs_src [1,4,67]
 
         Rs_src = src_cam_poses[0, :, :3, :3]
         ts_src = src_cam_poses[0, :, :3, 3]

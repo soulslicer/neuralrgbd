@@ -27,6 +27,8 @@ def test(model_KV, d_candi, Cam_Intrinsics, t_win_r,
     nGPU = 1 # should set to 1 for testing
     BatchIdx_range = torch.FloatTensor(np.arange(nGPU)) 
 
+    # ref_frame [1,3,256,384]
+    # src_frames [1,4,3,256,384]
     ref_frame = torch.cat(tuple([ref_dat['img'].cuda() for ref_dat in Ref_Dats]), dim=0)
     src_frames_list =  [torch.cat(tuple([src_dat_frame['img'].cuda() \
                         for src_dat_frame in src_dats_traj]), dim=0).unsqueeze(0) \
