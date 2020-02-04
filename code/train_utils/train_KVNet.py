@@ -107,8 +107,9 @@ def train(
             if refine_dup:
                 depth_ref_imgsize = Ref_Dats[ibatch]['dmap_up4_imgsize_digit'].cuda( kv_dpv.get_device() )
             else:
-                depth_ref_imgsize = Ref_Dats[ibatch]['dmap_imgsize_digit'].cuda( kv_dpv.get_device() ) 
+                depth_ref_imgsize = Ref_Dats[ibatch]['dmap_imgsize_digit'].cuda( kv_dpv.get_device() )
 
+            # This NLL Loss seems to work on this digitzed space
             loss = loss +  F.nll_loss(d_dpv[ibatch,:,:,:].unsqueeze(0), depth_ref, ignore_index=0) 
             loss = loss + F.nll_loss(dmap_cur_refined[ibatch,:,:,:].unsqueeze(0), depth_ref_imgsize, ignore_index=0)
 

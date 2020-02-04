@@ -45,9 +45,9 @@ CUDA_VISIBLE_DEVICES=0 python3 test_KVNet.py \
  		--feature_dim 64 \
  		--ndepth 64 \
 		--dataset kitti \
-		--dataset_path /datasets/kitti \
+		--dataset_path ../data/datasets/kitti \
         --split_file ./mdataloader/kitti_split/testing.txt \
- 		--model_path ./saved_models/kvnet_kitti.tar
+ 		--model_path ./saved_models/kvnet_checkpoint_iter_105000.tar
 
 
 
