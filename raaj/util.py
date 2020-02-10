@@ -16,6 +16,28 @@ import torch
 import torch.nn.functional as F
 import torchvision
 
+def load_pretrained_model(model, pretrained_path, optimizer = None):
+    r'''
+    load the pre-trained model, if needed, also load the optimizer status
+    '''
+    pre_model_dict_info = torch.load(pretrained_path)
+    if isinstance(pre_model_dict_info, dict):
+        pre_model_dict = pre_model_dict_info['state_dict']
+    else:
+        pre_model_dict = pre_model_dict_info
+
+    model_dict = model.state_dict();
+    pre_model_dict_feat = {k:v for k,v in pre_model_dict.items() if k in model_dict};
+
+    # update the entries #
+    model_dict.update( pre_model_dict_feat)
+    # load the new state dict #
+    model.load_state_dict( pre_model_dict_feat )
+
+    if optimizer is not None:
+        optimizer.load_state_dict(pre_model_dict_info['optimizer'])
+        print('Also loaded the optimizer status')
+
 # Not diff
 def digitized_to_dpv(depth_digit, N):
     if depth_digit.shape[0] != 1:

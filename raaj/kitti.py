@@ -114,7 +114,7 @@ def _read_split_file( filepath):
 
     return trajs
 
-def _read_IntM_from_pdata( p_data,  out_size = None,   mode = "left"):
+def _read_IntM_from_pdata( p_data,  out_size = None,   mode = "left",   crop_amt = [1., 1.]):
     '''
     Get the intrinsic camera info from pdata
     raw_img_size - [width, height]
@@ -133,8 +133,10 @@ def _read_IntM_from_pdata( p_data,  out_size = None,   mode = "left"):
     height = int( raw_img_size[1])
 
     # HACK BECAUSE OF CROPPING
-    IntM[0, 0] *= 2.
-    width /= 2
+    IntM[0, 0] *= crop_amt[0]
+    width /= crop_amt[0]
+    IntM[1, 1] *= crop_amt[1]
+    height /= crop_amt[1]
 
     focal_length = np.mean([IntM[0,0], IntM[1,1]])
     h_fov = math.degrees(math.atan(IntM[0, 2] / IntM[0, 0]) * 2)
@@ -170,7 +172,7 @@ def _read_IntM_from_pdata( p_data,  out_size = None,   mode = "left"):
             'intrinsic_M': IntM}
     return cam_intrinsic
 
-def get_paths(traj_indx, database_path_base = '/datasets/kitti', split_txt = None, mode = 'train'):
+def get_paths(traj_indx, database_path_base = '/datasets/kitti', split_txt = None, mode = 'train', t_win = 2):
     '''
     Return the training info for one trajectory
     Assuming:
@@ -216,7 +218,8 @@ def get_paths(traj_indx, database_path_base = '/datasets/kitti', split_txt = Non
 
     #
     # assume: the depth frames for one traj. is always nimg - 10 (ignoring the first and last 5 frames)
-    p_data = pykitti.raw(basedir, date, drive, frames= range(5, nimg-5))
+    fsize = t_win*2 + 1
+    p_data = pykitti.raw(basedir, date, drive, frames= range(fsize, nimg-fsize))
 
     nimg = len(p_data)
     dmap_paths = [[],[]]
@@ -306,7 +309,7 @@ def _read_dimg(path, img_size = None, no_process= False, only_resize = False):
 class KITTI_dataset(data.Dataset):
 
     def __init__(self, training, p_data, dmap_seq_paths, poses, intrin_path,
-                 img_size = [1248,380], digitize = False, d_candi = None, resize_dmap = None, if_process = True,
+                 img_size = [1248,380], digitize = False, d_candi = None, d_candi_up = None, resize_dmap = None, if_process = True,
                  crop_w = 384):
 
         '''
@@ -331,7 +334,7 @@ class KITTI_dataset(data.Dataset):
 
         '''
 
-        assert len(p_data) == len(dmap_seq_paths[0]) == len( poses)
+        assert len(p_data) == len(dmap_seq_paths[0]) == len(poses)
         assert len(p_data) == len(dmap_seq_paths[1]) == len(poses)
 
         if crop_w is not None:
@@ -355,8 +358,7 @@ class KITTI_dataset(data.Dataset):
             self.label_max = len(d_candi) - 1
 
         # usample in the d dimension #
-        self.dup4_candi = \
-                np.linspace( self.d_candi.min(), self.d_candi.max(), len(self.d_candi) * 4)
+        self.dup4_candi = d_candi_up
         self.dup4_label_min = 0
         self.dup4_label_max = len(self.dup4_candi) -1
         ##
@@ -367,6 +369,10 @@ class KITTI_dataset(data.Dataset):
 
         self.if_preprocess = if_process
 
+        if crop_w is not None:
+            self.crop_amt = [self.img_size[0]/self.crop_w, 1.]
+            if self.crop_amt[0] != 2: raise Exception('Check this')
+
         # initialization about the camera intrsinsics, which is the same for all data #
         if crop_w is None:
             left_cam_intrinsics = self.get_cam_intrinsics(None, "left")
@@ -375,13 +381,13 @@ class KITTI_dataset(data.Dataset):
             width_ = int(crop_w * self.resize_dmap)
             height_ = int(float( self.img_size[1] * self.resize_dmap))
             img_size_ = np.array([width_, height_], dtype=int)
-            left_cam_intrinsics = self.get_cam_intrinsics(img_size = img_size_ , mode="left")
-            right_cam_intrinsics = self.get_cam_intrinsics(img_size=img_size_, mode="right")
+            left_cam_intrinsics = self.get_cam_intrinsics(img_size = img_size_ , mode = "left", crop_amt = self.crop_amt)
+            right_cam_intrinsics = self.get_cam_intrinsics(img_size=img_size_, mode = "right", crop_amt = self.crop_amt)
 
         self.left_cam_intrinsics = left_cam_intrinsics
         self.right_cam_intrinsics = right_cam_intrinsics
 
-    def get_cam_intrinsics(self,  img_size = None,  mode = "left"):
+    def get_cam_intrinsics(self,  img_size = None,  mode = "left",  crop_amt = [1., 1.]):
         '''
         Get the camera intrinsics
         '''
@@ -396,7 +402,7 @@ class KITTI_dataset(data.Dataset):
                 width = int(float( self.img_size[0] * self.resize_dmap))
                 height = int(float( self.img_size[1] * self.resize_dmap))
 
-        cam_intrinsics = _read_IntM_from_pdata( self.p_data, out_size = [width, height], mode = mode)
+        cam_intrinsics = _read_IntM_from_pdata( self.p_data, out_size = [width, height], mode = mode, crop_amt = crop_amt)
         #self.cam_intrinsics = cam_intrinsics
 
         return cam_intrinsics
@@ -470,6 +476,17 @@ class KITTI_dataset(data.Dataset):
                 dmap_imgsize_digit[dmap_imgsize_digit >= self.label_max] = self.label_max
                 dmap_imgsize_digit[dmap_imgsize_digit <= self.label_min] = self.label_min
                 dmap_imgsize_digit = torch.from_numpy(dmap_imgsize_digit)
+
+                # data = dmap_imgsize_digit.numpy()
+                # for r in range(0, data.shape[0]):
+                #     for c in range(0, data.shape[1]):
+                #         if data[r,c] == 0: continue
+                #         print((r,c,data[r,c]))
+                # import cv2
+                # print(dmap_imgsize_digit.numpy())
+                # cv2.imshow("win", dmap_imgsize_digit.numpy()*255)
+                # cv2.waitKey(0)
+                # stop
 
                 dmap_up4_imgsize_digit = dMap_to_indxMap(dmap_imgsize, self.dup4_candi)
                 dmap_up4_imgsize_digit[dmap_up4_imgsize_digit >= self.dup4_label_max] = self.dup4_label_max

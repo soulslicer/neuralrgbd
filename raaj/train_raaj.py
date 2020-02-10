@@ -1,10 +1,10 @@
 # Torch
-import open3d as o3d
 import torch
 torch.backends.cudnn.benchmark=True
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
+import torch.optim as optim
 
 # Python
 import numpy as np
@@ -19,6 +19,7 @@ from util import Logger
 import kitti
 import batch_loader
 import inverse_warp as iv
+from model import KVNET
 
 # Other
 from tensorboardX import SummaryWriter
@@ -27,11 +28,38 @@ from tensorboardX import SummaryWriter
 #from viewer import viewer
 from viewer.viewer import Visualizer
 
+def powerf(d_min, d_max, nDepth, power):
+    f = lambda x: d_min + (d_max - 1) * x
+    x = np.linspace(start=0, stop=1, num=nDepth)
+    x = np.power(x, power)
+    candi = [f(v) for v in x]
+    return np.array(candi)
+
 def hack(cloud):
     fcloud = np.zeros(cloud.shape).astype(np.float32)
     for i in range(0, cloud.shape[0]):
         fcloud[i] = cloud[i]
     return fcloud
+
+def tocloud(depth, rgb, intr, extr):
+    pts = util.depth_to_pts(depth, intr)
+    pts = pts.reshape((3, pts.shape[1] * pts.shape[2]))
+    # pts_numpy = pts.numpy()
+
+    # Attempt to transform
+    transform = torch.inverse(extr)
+    pts = torch.cat([pts, torch.ones((1, pts.shape[1]))])
+    pts = torch.matmul(transform, pts)
+    pts_numpy = pts[0:3, :].numpy()
+
+    # Convert Color
+    pts_color = rgb.reshape((3, rgb.shape[1] * rgb.shape[2])) * 255
+    pts_normal = np.zeros((3, rgb.shape[1] * rgb.shape[2]))
+
+    # Visualize
+    all_together = np.concatenate([pts_numpy, pts_color, pts_normal], 0).astype(np.float32).T
+    all_together = hack(all_together)
+    return all_together
 
 def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     ref_dats_in = local_info_valid['ref_dats']
@@ -48,65 +76,65 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     Stereo Warp (WE ASSUME LEFT AND RIGHT INTRINSICS ARE THE SAME)
     """
 
-    batch_num = 1
-    src_frame = 3
-    target_frame = src_frame  # FIXED
-
-    target_rgb_img = src_dats_in[batch_num][target_frame]["left_camera"]["img"][0, :, :, :]
-    target_rgb_img[0, :, :] = target_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + \
-                              kitti.__imagenet_stats["mean"][0]
-    target_rgb_img[1, :, :] = target_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + \
-                              kitti.__imagenet_stats["mean"][1]
-    target_rgb_img[2, :, :] = target_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + \
-                              kitti.__imagenet_stats["mean"][2]
-    target_rgb_img = torch.unsqueeze(target_rgb_img, 0)
-
-    src_rgb_img = src_dats_in[batch_num][src_frame]["right_camera"]["img"][0, :, :, :]
-    src_rgb_img[0, :, :] = src_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-    src_rgb_img[1, :, :] = src_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-    src_rgb_img[2, :, :] = src_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-    src_rgb_img = torch.unsqueeze(src_rgb_img, 0)
-
-    target_depth_map = src_dats_in[batch_num][target_frame]["left_camera"]["dmap_imgsize"]
-    depth_mask = target_depth_map > 0.;
-    #depth_mask = depth_mask.float()
-
-    pose_target2src = T_left2right
-    # pose_target2src = torch.inverse(pose_target2src)
-    pose_target2src = torch.unsqueeze(pose_target2src, 0)
-
-    intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
-    #intr[0,0] *= 2;
-    intr[2, 2] = 1;
-    intr = intr[0:3, 0:3]
-    intr = torch.tensor(intr.astype(np.float32))
-    intr = torch.unsqueeze(intr, 0)
-
-    target_warped_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
-
-    full_mask = depth_mask & valid_points
-    full_mask = full_mask.float()
-
-    target_rgb_img = target_rgb_img * full_mask.float()
-
-    # Visualize RGB Image
-    src_rgb_img = cv2.cvtColor(src_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    target_rgb_img = cv2.cvtColor(target_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    target_warped_img = cv2.cvtColor(target_warped_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    #comb = target_rgb_img * 0.5 + target_warped_img * 0.5
-    comb = np.power(target_rgb_img - target_warped_img, 2)
-
-    #fimage = np.vstack((target_rgb_img, src_rgb_img))
-    fimage = np.vstack((target_rgb_img, target_warped_img, comb))
-
-    print(target_rgb_img.shape)
-    print(intr)
-
-    cv2.namedWindow("fimage")
-    cv2.moveWindow("fimage", 2500, 50)
-    cv2.imshow("fimage", fimage)
-    cv2.waitKey(0)
-    stop
+    # batch_num = 1
+    # src_frame = 3
+    # target_frame = src_frame  # FIXED
+    #
+    # target_rgb_img = src_dats_in[batch_num][target_frame]["left_camera"]["img"][0, :, :, :]
+    # target_rgb_img[0, :, :] = target_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + \
+    #                           kitti.__imagenet_stats["mean"][0]
+    # target_rgb_img[1, :, :] = target_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + \
+    #                           kitti.__imagenet_stats["mean"][1]
+    # target_rgb_img[2, :, :] = target_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + \
+    #                           kitti.__imagenet_stats["mean"][2]
+    # target_rgb_img = torch.unsqueeze(target_rgb_img, 0)
+    #
+    # src_rgb_img = src_dats_in[batch_num][src_frame]["right_camera"]["img"][0, :, :, :]
+    # src_rgb_img[0, :, :] = src_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+    # src_rgb_img[1, :, :] = src_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+    # src_rgb_img[2, :, :] = src_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    # src_rgb_img = torch.unsqueeze(src_rgb_img, 0)
+    #
+    # target_depth_map = src_dats_in[batch_num][target_frame]["left_camera"]["dmap_imgsize"]
+    # depth_mask = target_depth_map > 0.;
+    # #depth_mask = depth_mask.float()
+    #
+    # pose_target2src = T_left2right
+    # # pose_target2src = torch.inverse(pose_target2src)
+    # pose_target2src = torch.unsqueeze(pose_target2src, 0)
+    #
+    # intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
+    # #intr[0,0] *= 2;
+    # intr[2, 2] = 1;
+    # intr = intr[0:3, 0:3]
+    # intr = torch.tensor(intr.astype(np.float32))
+    # intr = torch.unsqueeze(intr, 0)
+    #
+    # target_warped_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
+    #
+    # full_mask = depth_mask & valid_points
+    # full_mask = full_mask.float()
+    #
+    # target_rgb_img = target_rgb_img * full_mask.float()
+    #
+    # # Visualize RGB Image
+    # src_rgb_img = cv2.cvtColor(src_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # target_rgb_img = cv2.cvtColor(target_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # target_warped_img = cv2.cvtColor(target_warped_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # #comb = target_rgb_img * 0.5 + target_warped_img * 0.5
+    # comb = np.power(target_rgb_img - target_warped_img, 2)
+    #
+    # #fimage = np.vstack((target_rgb_img, src_rgb_img))
+    # fimage = np.vstack((target_rgb_img, target_warped_img, comb))
+    #
+    # print(target_rgb_img.shape)
+    # print(intr)
+    #
+    # cv2.namedWindow("fimage")
+    # cv2.moveWindow("fimage", 2500, 50)
+    # cv2.imshow("fimage", fimage)
+    # cv2.waitKey(0)
+    # stop
 
     """
     Left Cam Warp
@@ -118,8 +146,8 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     """
 
     # batch_num = 1
-    # src_frame = 3
-    # target_frame = 4 # FIXED
+    # src_frame = 1
+    # target_frame = len(src_dats_in[batch_num])/2  # FIXED MIDDLE ONE ALWAYS
     #
     # target_rgb_img = src_dats_in[batch_num][target_frame]["left_camera"]["img"][0, :, :, :]
     # target_rgb_img[0, :, :] = target_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
@@ -135,14 +163,12 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     #
     # target_depth_map = src_dats_in[batch_num][target_frame]["left_camera"]["dmap_imgsize"]
     # depth_mask = target_depth_map > 0.;
-    # depth_mask = depth_mask.float()
     #
     # pose_target2src = left_src_cam_poses_in[batch_num, src_frame, :, :]
     # #pose_target2src = torch.inverse(pose_target2src)
     # pose_target2src = torch.unsqueeze(pose_target2src, 0)
     #
     # intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
-    # #intr[0,0] *= 2;
     # intr[2, 2] = 1;
     # intr = intr[0:3, 0:3]
     # intr = torch.tensor(intr.astype(np.float32))
@@ -150,16 +176,25 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     #
     # target_warped_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
     #
+    # full_mask = depth_mask & valid_points
+    # full_mask = full_mask.float()
+    #
+    # target_rgb_img = target_rgb_img * full_mask.float()
+    #
     # #target_rgb_img = target_rgb_img * depth_mask
     #
     # # Visualize RGB Image
     # target_rgb_img = cv2.cvtColor(target_rgb_img[0,:,:,:].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
     # target_warped_img = cv2.cvtColor(target_warped_img[0,:,:,:].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # comb = target_rgb_img*0.25 + target_warped_img*0.75
-    # #comb = target_rgb_img - target_warped_img
+    # #comb = target_rgb_img*0.25 + target_warped_img*0.75
+    # comb = np.power(target_rgb_img - target_warped_img, 2)
     #
     # fimage = np.vstack((target_rgb_img, target_warped_img, comb))
+    # error = np.sum(np.sum(fimage))
+    # print(error)
     #
+    # cv2.namedWindow("fimage")
+    # cv2.moveWindow("fimage", 2500, 50)
     # cv2.imshow("fimage", fimage)
     # cv2.waitKey(0)
     # stop
@@ -176,49 +211,64 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     #
     #     # Images
     #     rgb_img = datum["img"][0, :, :, :].numpy()
+    #     rgb_lowres_img = datum["img_dw"][0, :, :, :].numpy()
     #     rgb_img[0, :, :] = rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
     #     rgb_img[1, :, :] = rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
     #     rgb_img[2, :, :] = rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    #     rgb_lowres_img[0, :, :] = rgb_lowres_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+    #     rgb_lowres_img[1, :, :] = rgb_lowres_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+    #     rgb_lowres_img[2, :, :] = rgb_lowres_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
     #     gray_img = datum["img_gray"][0, 0, :, :].numpy()
     #     depth_imgsize = datum["dmap_imgsize"]
     #     depth_mask = depth_imgsize > 0.;
     #     depth_mask = depth_mask.float()
     #     depth_digit = datum["dmap_imgsize_digit"]
     #     depth_digit_up = datum["dmap_up4_imgsize_digit"]
+    #     depth_digit_lowres = datum["dmap"]
     #     transform = left_src_cam_poses_in[batch_num, idx, :, :]
     #
-    #     # Low Rez Quantized
+    #     # Low Res Depth Quantized
+    #     dpv = util.digitized_to_dpv(depth_digit_lowres, len(d_candi))
+    #     depthmap_lowres_quantized = util.dpv_to_depthmap(dpv, d_candi)
+    #     #depthmap_lowres_quantized = datum["dmap_raw"]
+    #
+    #     # Low Depth Quantized
     #     dpv = util.digitized_to_dpv(depth_digit, len(d_candi))
     #     depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi) * depth_mask
     #
-    #     # High Rez Quantized
-    #     # dpv = util.digitized_to_dpv(depth_digit_up, len(d_candi_up))
-    #     # depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi_up) * depth_mask
+    #     # High Depth Quantized
+    #     dpv = util.digitized_to_dpv(depth_digit_up, len(d_candi_up))
+    #     depthmap_up_quantized = util.dpv_to_depthmap(dpv, d_candi_up) * depth_mask
     #
     #     # Original Depth Map
-    #     # depthmap_quantized = depth_imgsize
+    #     depthmap_orig = depth_imgsize
     #
-    #     # Convert to Pts
+    #     # Intr change
     #     intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
     #     intr[2, 2] = 1;
-    #     pts = util.depth_to_pts(depthmap_quantized, intr)
-    #     pts = pts.reshape((3, pts.shape[1] * pts.shape[2]))
-    #     # pts_numpy = pts.numpy()
     #
-    #     # Attempt to transform
-    #     transform = torch.inverse(transform)
-    #     pts = torch.cat([pts, torch.ones((1, pts.shape[1]))])
-    #     pts = torch.matmul(transform, pts)
-    #     pts_numpy = pts[0:3, :].numpy()
+    #     # Cloud
+    #     cloud_orig = tocloud(depthmap_orig, rgb_img, intr, transform)
+    #     cloud_quantized = tocloud(depthmap_quantized, rgb_img, intr, transform)
+    #     cloud_up_quantized = tocloud(depthmap_up_quantized, rgb_img, intr, transform)
+    #     cloud_lowres_quantized = tocloud(depthmap_lowres_quantized, rgb_lowres_img, left_cam_intrin_in[batch_num]["intrinsic_M"], transform)
     #
-    #     # Convert Color
-    #     pts_color = rgb_img.reshape((3, rgb_img.shape[1] * rgb_img.shape[2])) * 255
-    #     pts_normal = np.zeros((3, rgb_img.shape[1] * rgb_img.shape[2]))
+    #     cloud_quantized[:,1] += 2.;
+    #     cloud_up_quantized[:, 1] += 2.;
     #
-    #     # Visualize
-    #     all_together = np.concatenate([pts_numpy, pts_color, pts_normal], 0).astype(np.float32).T
-    #     all_together = hack(all_together)
-    #     visualizer.addCloud(all_together, 2)
+    #     # Cloud for distance
+    #     dcloud = []
+    #     for m in range(0, 30):
+    #         dcloud.append([0,2,m, 255,255,255, 0,0,0])
+    #     dcloud = np.array(dcloud).astype(np.float32)
+    #
+    #     # IMPLEMENT SOFT TARGET ALGO
+    #     # DO DURING TRAINING TIME BUT HOW
+    #
+    #     #visualizer.addCloud(cloud_orig, 2)
+    #     visualizer.addCloud(cloud_up_quantized, 2)
+    #     #visualizer.addCloud(cloud_lowres_quantized, 3)
+    #     visualizer.addCloud(dcloud, 4)
     #     visualizer.swapBuffer()
     #
     #     # Visualize RGB Image
@@ -226,8 +276,6 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     #     rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB)
     #     cv2.imshow("win", rgb_img)
     #     cv2.waitKey(0)
-    #
-    #     # Issue, the d_candi range is 0 to 1
 
 
 # print(str(iepoch) + " " + str(batch_idx) + " " + str(frame_count))
@@ -235,6 +283,8 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
 # I need to know why its size 2
 
 # print(len(local_info["ref_dats"])) # seems to be a function of the batch size??
+
+visualizer = None
 
 def main():
     import argparse
@@ -272,8 +322,14 @@ def main():
     parser.add_argument('--dataset_path', type=str, default='.', help='Path to the dataset') 
     parser.add_argument('--change_aspect_ratio', action='store_true', default=False, help='If we want to change the aspect ratio. This option is only useful for KITTI')
     parser.add_argument('--viz', action='store_true', help='viz')
+    parser.add_argument('--qpower', type=float, default=1., help='How much exp quantization wanted')
+    parser.add_argument('--ngpu', type=int, default=1., help='How many GPU')
 
-    hack_num = 326
+    #hack_num = 326
+    hack_num = 0
+    #print("HACK!!")
+
+    # ==================================================================================== #
 
     # Arguments Parsing
     args = parser.parse_args()
@@ -286,8 +342,17 @@ def main():
     pre_trained = args.pre_trained
     t_win_r = args.t_win
     nDepth = args.ndepth
-    d_candi = np.linspace(args.d_min, args.d_max, nDepth)
-    d_candi_up = np.linspace(args.d_min, args.d_max, nDepth*4)
+    qpower = args.qpower
+    ngpu = args.ngpu
+
+    # Linear
+    #d_candi = np.linspace(args.d_min, args.d_max, nDepth)
+    #d_candi_up = np.linspace(args.d_min, args.d_max, nDepth*4)
+
+    # Quad
+    d_candi = powerf(args.d_min, args.d_max, nDepth, qpower)
+    d_candi_up = powerf(args.d_min, args.d_max, nDepth*4, qpower)
+
     LR = args.LR
     sigma_soft_max = args.sigma_soft_max #10.#500.
     dnet_feature_dim = args.feature_dim
@@ -311,16 +376,19 @@ def main():
     sys.stdout = stdout
 
     if viz:
+        global visualizer
         visualizer = Visualizer("V")
         visualizer.start()
     else:
         visualizer = None
 
+    # ==================================================================================== #
+
     # Dataset #
     dataset_path = args.dataset_path
     if dataset_name == "kitti":
         dataset_init = kitti.KITTI_dataset
-        fun_get_paths = lambda traj_indx: kitti.get_paths(traj_indx,split_txt= './kitti_split/training.txt', mode='train', database_path_base = dataset_path)
+        fun_get_paths = lambda traj_indx: kitti.get_paths(traj_indx,split_txt= './kitti_split/training.txt', mode='train', database_path_base = dataset_path, t_win = t_win_r)
 
         # Cropping
         if not args.change_aspect_ratio: # we will keep the aspect ratio and do cropping
@@ -336,15 +404,38 @@ def main():
         fldr_path, img_paths, dmap_paths, poses, intrin_path = fun_get_paths(0)
         dataset = dataset_init(True, img_paths, dmap_paths, poses,
                                intrin_path = intrin_path, img_size= img_size, digitize= True,
-                               d_candi= d_candi_dmap_ref, resize_dmap=.25, crop_w = crop_w)
+                               d_candi = d_candi_dmap_ref, d_candi_up = d_candi_up, resize_dmap=.25, crop_w = crop_w)
 
         # https://github.com/ClementPinard/SfmLearner-Pytorch/blob/master/inverse_warp.py
+
+    # ==================================================================================== #
+
+    # Model
+    print('Init Network - Assume left usage')
+    model_KVnet = KVNET(feature_dim = dnet_feature_dim, cam_intrinsics = dataset.left_cam_intrinsics,
+                        d_candi = d_candi, d_candi_up = d_candi_up, sigma_soft_max = sigma_soft_max, KVNet_feature_dim = dnet_feature_dim,
+                        d_upsample_ratio_KV_net = None)
+
+    #model_KVnet = torch.nn.DataParallel(model_KVnet,  dim=0)
+    model_KVnet.cuda()
+
+    optimizer_KV = optim.Adam(model_KVnet.parameters(), lr = LR , betas= (.9, .999 ))
+
+    model_path_KV = args.pre_trained_model_path
+    if model_path_KV is not '.' and pre_trained:
+        print('loading KV_net at %s'%(model_path_KV))
+        util.load_pretrained_model(model_KVnet, model_path_KV, optimizer_KV)
+
+    print('Done')
+
+    # ==================================================================================== #
 
     # Train
     for iepoch in range(n_epoch):
         BatchScheduler = batch_loader.Batch_Loader(
                 batch_size = batch_size, fun_get_paths = fun_get_paths,
-                dataset_traj = dataset, nTraj=len(traj_Indx), dataset_name = dataset_name, hack_num = hack_num)
+                dataset_traj = dataset, nTraj=len(traj_Indx), dataset_name = dataset_name, t_win_r = t_win_r,
+                hack_num = hack_num)
 
         # * Idea, we can do the entire feature extractor in parallel, then we split it?
 
@@ -356,9 +447,32 @@ def main():
                 if n_valid_batch > 0:
                     local_info_valid = batch_loader.get_valid_items(local_info)
 
-                    #if viz:
-                    viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+                    # Noise to Pose?
+
+                    if viz:
+                        viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+
+                    # Test
+                    # We must do it so that it
+
+                    train(model_KVnet, local_info_valid)
+
+                    # test_data = {"a": torch.zeros(4,3,3,100,100), "b": torch.zeros(4,22,100,100), "c": np.eye(5)}
+                    # output1, output2 = torch.nn.parallel.data_parallel(model_KVnet, test_data, range(ngpu))
+                    # #output = model_KVnet(local_info_valid)
+                    # print(output2.shape)
+                    # pass
+
+def train(model, local_info_valid):
+    
+
+
+    pass
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        global visualizer
+        if visualizer is not None: visualizer.kill_received = True
