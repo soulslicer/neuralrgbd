@@ -418,6 +418,7 @@ def main():
 
     #model_KVnet = torch.nn.DataParallel(model_KVnet,  dim=0)
     model_KVnet.cuda()
+    model_KVnet.train()
 
     optimizer_KV = optim.Adam(model_KVnet.parameters(), lr = LR , betas= (.9, .999 ))
 
@@ -447,7 +448,11 @@ def main():
                 if n_valid_batch > 0:
                     local_info_valid = batch_loader.get_valid_items(local_info)
 
+                    # TEST
+
                     # Noise to Pose?
+
+                    # The log_softmax input should not be negative! (I CHANGED IT)
 
                     if viz:
                         viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
@@ -455,18 +460,91 @@ def main():
                     # Test
                     # We must do it so that it
 
-                    train(model_KVnet, local_info_valid)
-
-                    # test_data = {"a": torch.zeros(4,3,3,100,100), "b": torch.zeros(4,22,100,100), "c": np.eye(5)}
-                    # output1, output2 = torch.nn.parallel.data_parallel(model_KVnet, test_data, range(ngpu))
-                    # #output = model_KVnet(local_info_valid)
-                    # print(output2.shape)
-                    # pass
-
-def train(model, local_info_valid):
-    
+                    train(model_KVnet, optimizer_KV, local_info_valid, ngpu)
 
 
+def train(model, optimizer_KV, local_info_valid, ngpu):
+
+    # Ensure same size
+    valid = (len(local_info_valid["left_cam_intrins"]) == len(local_info_valid["left_src_cam_poses"]) == len(local_info_valid["src_dats"]))
+    if not valid:
+        raise Exception('Batch size invalid')
+
+    # Keep to middle only
+    midval = len(local_info_valid["src_dats"][0])/2
+
+    # Grab ground truth digitized map
+    dmap_imgsize_digit_arr = []
+    dmap_digit_arr = []
+    for i in range(0, len(local_info_valid["src_dats"])):
+        dmap_imgsize_digit = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_imgsize_digit"]
+        dmap_imgsize_digit_arr.append(dmap_imgsize_digit)
+        dmap_digit = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap"]
+        dmap_digit_arr.append(dmap_digit)
+    dmap_imgsize_digits = torch.cat(dmap_imgsize_digit_arr).cuda() # [B,256,384] uint64
+    dmap_digits = torch.cat(dmap_digit_arr).cuda() # [B,64,96] uint64
+
+    intrinsics_arr = []
+    intrinsics_up_arr = []
+    unit_ray_arr = []
+    for i in range(0, len(local_info_valid["left_cam_intrins"])):
+        intr = local_info_valid["left_cam_intrins"][i]["intrinsic_M_cuda"]
+        intr_up = intr*4; intr_up[2,2] = 1;
+        intrinsics_arr.append(intr.unsqueeze(0))
+        intrinsics_up_arr.append(intr_up.unsqueeze(0))
+        unit_ray_arr.append(local_info_valid["left_cam_intrins"][i]["unit_ray_array_2D"].unsqueeze(0))
+    intrinsics = torch.cat(intrinsics_arr)
+    intrinsics_up = torch.cat(intrinsics_up_arr)
+    unit_ray = torch.cat(unit_ray_arr)
+
+    src_cam_poses_arr = []
+    for i in range(0, len(local_info_valid["left_src_cam_poses"])):
+        pose = local_info_valid["left_src_cam_poses"][i]
+        src_cam_poses_arr.append(pose[:,0:midval+1,:,:]) # currently [1x3x4x4]
+    src_cam_poses = torch.cat(src_cam_poses_arr)
+
+    rgb_arr = []
+    debug_path = []
+    for i in range(0, len(local_info_valid["src_dats"])):
+        rgb_set = []
+        debug_path_int = []
+        for j in range(0, len(local_info_valid["src_dats"][i])):
+            rgb_set.append(local_info_valid["src_dats"][i][j]["left_camera"]["img"])
+            debug_path_int.append(local_info_valid["src_dats"][i][j]["left_camera"]["img_path"])
+            if j == midval: break
+        rgb_arr.append(torch.cat(rgb_set).unsqueeze(0))
+        debug_path.append(debug_path_int)
+    rgb = torch.cat(rgb_arr)
+
+    model_input = {
+        "intrinsics": intrinsics,
+        "unit_ray": unit_ray,
+        "src_cam_poses": src_cam_poses,
+        "rgb": rgb,
+        "bv_predict": None # Has to be [B, 64, H, W]
+    }
+    BV_cur, BV_cur_refined = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
+    # [B,128,64,96] [B,128,256,384]
+
+    print(BV_cur.get_device())
+    print(BV_cur_refined.get_device())
+    print(dmap_imgsize_digits.get_device())
+
+    # NLL Loss
+    loss = 0
+    for ibatch in range(BV_cur.shape[0]):
+        #loss = loss + torch.sum(BV_cur[ibatch,:,:,:])
+        loss = loss + F.nll_loss(BV_cur[ibatch,:,:,:].unsqueeze(0), dmap_digits[ibatch,:,:].unsqueeze(0), ignore_index=0)
+        loss = loss + F.nll_loss(BV_cur_refined[ibatch,:,:,:].unsqueeze(0), dmap_imgsize_digits[ibatch,:,:].unsqueeze(0), ignore_index=0)
+
+    # What if we convert the DPV to a depth map, and regress that too?
+
+    # Backward
+    #loss = loss / torch.tensor(float(ngpu)).cuda(loss.get_device())
+    loss.backward()
+    optimizer_KV.step()
+
+    print("aa")
     pass
 
 

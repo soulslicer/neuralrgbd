@@ -45,18 +45,11 @@ class KVNET(nn.Module):
         self.if_upsample_d = if_upsample_d
 
         # submodules #
-        if self.if_refined:
-            self.feature_extractor = submodels.feature_extractor(feature_dim = feature_dim, multi_scale=True)
-            self.d_net = submodels.D_NET_BASIC(
-                    self.feature_extractor, cam_intrinsics, 
-                    d_candi, sigma_soft_max, use_img_intensity=True, 
-                    BV_log = True, output_features = True)
-        else:
-            self.feature_extractor = submodels.feature_extractor(feature_dim = feature_dim)
-            self.d_net = submodels.D_NET_BASIC(
-                    self.feature_extractor, cam_intrinsics, 
-                    d_candi, sigma_soft_max, use_img_intensity=True,
-                    BV_log = True, output_features = False) 
+        self.feature_extractor = submodels.feature_extractor(feature_dim = feature_dim, multi_scale=True)
+        self.d_net = submodels.D_NET_BASIC(
+                self.feature_extractor, cam_intrinsics,
+                d_candi, sigma_soft_max, use_img_intensity=True,
+                BV_log = True, output_features = True)
 
         # KV Net needs to process on size of input - do we need this now?
         # We should be doing 3D Conv after feature output
@@ -64,26 +57,42 @@ class KVNET(nn.Module):
         #         feature_dim = KVNet_feature_dim,
         #         up_sample_ratio = d_upsample_ratio_KV_net)
 
-        if self.if_refined:
-            self.r_net = submodels.RefineNet_DPV_upsample(
-                    int(self.feature_dim), int(self.feature_dim/2), 3,
-                    D = len(self.d_candi), upsample_D=self.if_upsample_d )
+        self.r_net = submodels.RefineNet_DPV_upsample(
+                int(self.feature_dim), int(self.feature_dim/2), 3,
+                D = len(self.d_candi), upsample_D=self.if_upsample_d )
 
         # print # 
         print('KV-Net initialization:')
-        print('with R-net: %r'%(self.if_refined))
 
-    def forward(self, local_info_valid):
+    def forward(self, model_input):
+        # gpuID = torch.zeros((1)).cuda().get_device()
 
-        tensor1 = torch.zeros((2, 32, 100, 100)).cuda()
-        tensor2 = torch.zeros((2, 64, 100, 100)).cuda()
+        # "intrinsics": intrinsics, # [B, 3, 3]
+        # "unit_ray": unit_ray, [B, 3, 6144]
+        # "src_cam_poses": src_cam_poses, [B, 2, 4, 4]
+        # "rgb": rgb [4, 2, 3,256,384]
 
-        #print("GPU: " + str(tensor.get_device()))
-        print(local_info_valid["a"].shape)
+        # Compute the cost volume and get features
+        BV_cur, d_net_features = self.d_net(model_input)
+        d_net_features.append(model_input["rgb"][:,-1,:,:,:])
+        # 64 in feature Dim depends on the command line arguments
+        # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
 
-        #print("model")
+        # Should we just add the knet for some 3D Conv? or some version of it
 
-        return tensor1, tensor2
+        # Make sure size is still correct here!
+        BV_cur_refined = self.r_net(torch.exp(BV_cur), img_features=d_net_features)
+        # [B,128,256,384]
+
+        return BV_cur, BV_cur_refined
+
+        # Get Low Res Depth Map
+        # dmap_cur_lowres = util.depth_val_regression_batch(BV_cur, self.d_candi, BV_log=True).unsqueeze(1)
+        # [B,1,64,96]
+
+        pass
+        #print(model_input["rgb"].shape)
+
 
 
 

@@ -219,7 +219,7 @@ def get_paths(traj_indx, database_path_base = '/datasets/kitti', split_txt = Non
     #
     # assume: the depth frames for one traj. is always nimg - 10 (ignoring the first and last 5 frames)
     fsize = t_win*2 + 1
-    p_data = pykitti.raw(basedir, date, drive, frames= range(fsize, nimg-fsize))
+    p_data = pykitti.raw(basedir, date, drive, frames= range(5, nimg-5))
 
     nimg = len(p_data)
     dmap_paths = [[],[]]

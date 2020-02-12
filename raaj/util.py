@@ -631,6 +631,26 @@ def depth_val_regression(BV_measure, d_candi_cur, BV_log = True, ):
 
     return depth_regress
 
+# depth related #
+def depth_val_regression_batch(BV_measure, d_candi_cur, BV_log = True, ):
+    '''
+    inputs:
+        BV_measure: NDHW format
+
+    '''
+    assert len(d_candi_cur) == BV_measure.shape[1], \
+            'BV_measure should have the same # of slices as len(d_candi_cur) !'
+
+    depth_regress = torch.zeros(BV_measure.shape[0], BV_measure.shape[2], BV_measure.shape[3]).cuda()
+    for idx_d, d in enumerate(d_candi_cur):
+        if BV_log:
+            depth_regress = depth_regress + torch.exp(BV_measure[:,idx_d,:,:]) * d
+        else:
+            depth_regress = depth_regress + BV_measure[:,idx_d,:,:] * d
+
+    return depth_regress
+
+
 def depth_var(BV_measure, depth_mean, d_candi_cur, BV_log=True, d_sigma = 1.):
     '''
     Get the depth variance
