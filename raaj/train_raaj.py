@@ -27,7 +27,6 @@ from tensorboardX import SummaryWriter
 # PCL
 #from viewer import viewer
 
-
 def powerf(d_min, d_max, nDepth, power):
     f = lambda x: d_min + (d_max - 1) * x
     x = np.linspace(start=0, stop=1, num=nDepth)
@@ -278,11 +277,121 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     #     cv2.waitKey(0)
 
 
-# print(str(iepoch) + " " + str(batch_idx) + " " + str(frame_count))
-# I need the name of the dataset
-# I need to know why its size 2
+# Data Loading Module
+from torch.multiprocessing import Process, Queue, Value, cpu_count
 
-# print(len(local_info["ref_dats"])) # seems to be a function of the batch size??
+class BatchSchedulerMP:
+    def __init__(self, batch_size, fun_get_paths, dataset, nTraj, dataset_name,
+                 t_win_r, hack_num):
+
+        self.BatchScheduler = batch_loader.Batch_Loader(
+                batch_size = batch_size, fun_get_paths = fun_get_paths,
+                dataset_traj = dataset, nTraj = nTraj, dataset_name = dataset_name, t_win_r = t_win_r,
+                hack_num = hack_num)
+
+        self.queue = Queue()
+        self.control = Value('i', 1)
+        self.process = Process(target=self.worker, args=(self.BatchScheduler, self.queue, self.control))
+        self.process.start()
+
+    def stop(self):
+        self.control.value = 0
+
+    def worker(self, BatchScheduler, queue, control):
+
+        dataset_path = "../data/datasets/kitti/"
+        t_win_r = 2
+        dataset_init = kitti.KITTI_dataset
+        fun_get_paths = lambda traj_indx: kitti.get_paths(traj_indx, split_txt='./kitti_split/training.txt',
+                                                          mode='train',
+                                                          database_path_base=dataset_path, t_win=t_win_r)
+        img_size = [384, 256]
+        crop_w = None
+        # Load Dataset
+        n_scenes, _, _, _, _ = fun_get_paths(0)
+        traj_Indx = np.arange(0, n_scenes)
+        fldr_path, img_paths, dmap_paths, poses, intrin_path = fun_get_paths(0)
+        dataset = dataset_init(True, img_paths, dmap_paths, poses,
+                               intrin_path=intrin_path, img_size=img_size, digitize=True,
+                               d_candi=np.linspace(1, 30, 64), d_candi_up=np.linspace(1, 30, 64 * 4), resize_dmap=.25,
+                               crop_w=crop_w)
+        BatchScheduler = batch_loader.Batch_Loader(
+            batch_size=8, fun_get_paths=fun_get_paths,
+            dataset_traj=dataset, nTraj=len(traj_Indx), dataset_name='kitti', t_win_r=t_win_r,
+            hack_num=0)
+
+        while 1:
+            if control.value == 0:
+                break
+
+            # Iterate batch
+            for batch_idx in range(len(BatchScheduler)):
+                start = time.time()
+                for frame_count, ref_indx in enumerate(range(BatchScheduler.traj_len)):
+                    local_info = BatchScheduler.local_info_full()
+                    n_valid_batch = local_info['is_valid'].sum()
+
+                    if n_valid_batch > 0:
+                        local_info_valid = batch_loader.get_valid_items(local_info)
+                        pass
+                    else:
+                        pass
+
+                    # Update dat_array
+                    if frame_count < BatchScheduler.traj_len - 1:
+                        BatchScheduler.proceed_frame()
+
+                    print(batch_idx, frame_count)
+
+                BatchScheduler.proceed_batch()
+
+            break
+
+            #print("work")
+            #print(BatchScheduler)
+            time.sleep(1)
+
+
+dataset_path = "../data/datasets/kitti/"
+t_win_r = 2
+dataset_init = kitti.KITTI_dataset
+fun_get_paths = lambda traj_indx: kitti.get_paths(traj_indx, split_txt='./kitti_split/training.txt', mode='train',
+                                                  database_path_base=dataset_path, t_win=t_win_r)
+img_size = [384, 256]
+crop_w = None
+# Load Dataset
+n_scenes, _, _, _, _ = fun_get_paths(0)
+traj_Indx = np.arange(0, n_scenes)
+fldr_path, img_paths, dmap_paths, poses, intrin_path = fun_get_paths(0)
+dataset = dataset_init(True, img_paths, dmap_paths, poses,
+                       intrin_path=intrin_path, img_size=img_size, digitize=True,
+                       d_candi=np.linspace(1, 30, 64), d_candi_up=np.linspace(1, 30, 64*4), resize_dmap=.25, crop_w=crop_w)
+
+b = BatchSchedulerMP(8, fun_get_paths, dataset, len(traj_Indx), 'kitti', t_win_r, 0)
+
+while 1:
+    time.sleep(1)
+    print("main")
+
+#stop
+
+# # Data Worker
+# def work(loader, queue, control):
+#     while 1:
+#         if control.value == 0:
+#             break
+#         if queue.qsize() < 5:
+#             batch = opcaffe.Batch()
+#             myClass.load(batch)
+#             data = torch.tensor(batch.data)
+#             label = torch.tensor(batch.label)
+#             queue.put([data, label])
+#         time.sleep(0.1)
+# queue = Queue()
+# control = Value('i',1)
+# process = Process(target=work, args=(myClass, queue, control))
+# process.start()
+
 
 visualizer = None
 
@@ -445,13 +554,23 @@ def main():
 
         # Iterate batch
         for batch_idx in range(len(BatchScheduler)):
+            start = time.time()
             for frame_count, ref_indx in enumerate( range(BatchScheduler.traj_len)):
                 local_info = BatchScheduler.local_info_full()
-                n_valid_batch= local_info['is_valid'].sum()
+                n_valid_batch = local_info['is_valid'].sum()
 
                 if n_valid_batch > 0:
                     local_info_valid = batch_loader.get_valid_items(local_info)
                     local_info_valid["d_candi"] = d_candi
+
+                    # Put the data loader seperate?
+                    # It runs its epochs and its enumerator as per normal
+                    # Dumps it into a queue, that this then reads out
+                    # Flag to indicate ending?
+                    # Class function to call start and stop to reboot it - or just kill and respawn
+                    # Pass in Test or Train
+
+                    # Generate a map of laser angle - laser thickness uncertainity
 
                     # Test case
 
@@ -469,8 +588,17 @@ def main():
 
                     # Test with feedback
 
+                    # NAN at
+                    # video batch 4 / 18, iter: 450, frame_count: 237; Epoch: 1 / 20, loss = 126.69191
+                    # video batch 4 / 18, iter: 451, frame_count: 238; Epoch: 1 / 20, loss = nan
+
+                    end = time.time()
+                    print(end - start)
+                    start = time.time()
+
+
                     # Train
-                    output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu)
+                    output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, total_iter)
                     loss_v = output["loss"]
 
                 else:
@@ -505,7 +633,8 @@ def main():
 
             BatchScheduler.proceed_batch()
 
-def train(model, optimizer_KV, local_info_valid, ngpu):
+def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
+    start = time.time()
 
     # Ensure same size
     valid = (len(local_info_valid["left_cam_intrins"]) == len(local_info_valid["left_src_cam_poses"]) == len(local_info_valid["src_dats"]))
@@ -558,6 +687,9 @@ def train(model, optimizer_KV, local_info_valid, ngpu):
         debug_path.append(debug_path_int)
     rgb = torch.cat(rgb_arr)
 
+    # 10ms
+
+
     model_input = {
         "intrinsics": intrinsics,
         "unit_ray": unit_ray,
@@ -579,8 +711,6 @@ def train(model, optimizer_KV, local_info_valid, ngpu):
 
     # Apply the Binary CE Loss thing in Gengshan work that function
 
-    # SAVE THE MODELS
-
     # Demonstrate light curtain on KITTI dataset
 
     # Backward
@@ -588,30 +718,33 @@ def train(model, optimizer_KV, local_info_valid, ngpu):
     loss.backward()
     optimizer_KV.step()
 
-    # # Debug Viz (comment if needed)
-    # bnum = 1
-    # img = rgb[bnum,-1,:,:,:] # [1,3,256,384]
-    # img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-    # img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-    # img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-    # img = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # img = img[:,:,0]
-    # ###
-    # dmap_up_digit = dmap_imgsize_digits[bnum,:,:].unsqueeze(0) # [1,256,384] uint64
-    # d_candi = local_info_valid["d_candi"]
-    # dpv = util.digitized_to_dpv(dmap_up_digit, len(d_candi))
-    # depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi).squeeze(0).numpy() # [1,256,384]
-    # depthmap_quantized = depthmap_quantized/100.
-    # ###
-    # dpv_predicted = BV_cur_refined[bnum,:,:,:].unsqueeze(0).detach().cpu()
-    # depthmap_quantized_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True).squeeze(0).numpy()  # [1,256,384]
-    # depthmap_quantized_predicted = depthmap_quantized_predicted / 100.
-    # ###
-    # combined = np.hstack([img, depthmap_quantized, depthmap_quantized_predicted])
-    # cv2.namedWindow("win")
-    # cv2.moveWindow("win", 2500, 50)
-    # cv2.imshow("win", combined)
-    # cv2.waitKey(15)
+    # Debug Viz (comment if needed)
+    if total_iter % 10 == 0:
+        bnum = 0
+        img = rgb[bnum,-1,:,:,:] # [1,3,256,384]
+        img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+        img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+        img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+        img = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+        img = img[:,:,0]
+        ###
+        dmap_up_digit = dmap_imgsize_digits[bnum,:,:].unsqueeze(0) # [1,256,384] uint64
+        d_candi = local_info_valid["d_candi"]
+        dpv = util.digitized_to_dpv(dmap_up_digit, len(d_candi))
+        depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi).squeeze(0).numpy() # [1,256,384]
+        depthmap_quantized = depthmap_quantized/100.
+        ###
+        dpv_predicted = BV_cur_refined[bnum,:,:,:].unsqueeze(0).detach().cpu()
+        depthmap_quantized_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True).squeeze(0).numpy()  # [1,256,384]
+        depthmap_quantized_predicted = depthmap_quantized_predicted / 100.
+        ###
+        combined = np.hstack([img, depthmap_quantized, depthmap_quantized_predicted])
+        cv2.namedWindow("win")
+        cv2.moveWindow("win", 2500, 50)
+        cv2.imshow("win", combined)
+        cv2.waitKey(15)
+    else:
+        cv2.waitKey(15)
 
     # Return
     return {"loss": loss.detach().cpu().numpy()}

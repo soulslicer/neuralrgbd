@@ -143,7 +143,7 @@ class D_NET_BASIC(nn.Module):
                  sigma_soft_max, BV_log = False, normalize = True,
                  use_img_intensity = False, force_img_dw_rate = 1, 
                  parallel_d = True, output_features = False, 
-                 refine_costV = True, feat_dist = 'L2'):
+                 refine_costV = False, feat_dist = 'L2'):
         '''
         INPUTS: 
 
@@ -275,13 +275,13 @@ class D_NET_BASIC(nn.Module):
             costv_out1 = self.conv0_1( costv_out0)
             costv_out2 = self.conv0_2( costv_out1)
         else:
-            costv_out2 = costV
+            costv_out2 = cost_volumes
 
         # Ensure log like
         if self.BV_log:
-            BV = F.log_softmax(costv_out2, dim=1)
+            BV = F.log_softmax(-costv_out2, dim=1)
         else:
-            BV = F.softmax(costv_out2, dim=1)
+            BV = F.softmax(-costv_out2, dim=1)
 
         # Return BV and primary image features (in the future return others too for flow?)
         return BV, [feat_imgs_all[:,-1,:-3, :,:], feat_imgs_layer_1[:,-1,:,:,:]]
