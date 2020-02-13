@@ -26,7 +26,7 @@ from tensorboardX import SummaryWriter
 
 # PCL
 #from viewer import viewer
-from viewer.viewer import Visualizer
+
 
 def powerf(d_min, d_max, nDepth, power):
     f = lambda x: d_min + (d_max - 1) * x
@@ -376,6 +376,7 @@ def main():
     sys.stdout = stdout
 
     if viz:
+        from viewer.viewer import Visualizer
         global visualizer
         visualizer = Visualizer("V")
         visualizer.start()
@@ -431,6 +432,9 @@ def main():
 
     # ==================================================================================== #
 
+    # Vars
+    total_iter = -1
+
     # Train
     for iepoch in range(n_epoch):
         BatchScheduler = batch_loader.Batch_Loader(
@@ -438,8 +442,7 @@ def main():
                 dataset_traj = dataset, nTraj=len(traj_Indx), dataset_name = dataset_name, t_win_r = t_win_r,
                 hack_num = hack_num)
 
-        # * Idea, we can do the entire feature extractor in parallel, then we split it?
-
+        # Iterate batch
         for batch_idx in range(len(BatchScheduler)):
             for frame_count, ref_indx in enumerate( range(BatchScheduler.traj_len)):
                 local_info = BatchScheduler.local_info_full()
@@ -448,7 +451,7 @@ def main():
                 if n_valid_batch > 0:
                     local_info_valid = batch_loader.get_valid_items(local_info)
 
-                    # TEST
+                    # Test case
 
                     # Noise to Pose?
 
@@ -460,7 +463,23 @@ def main():
                     # Test
                     # We must do it so that it
 
-                    train(model_KVnet, optimizer_KV, local_info_valid, ngpu)
+                    output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu)
+                    print(output)
+
+                # Add Iterations
+                total_iter += 1
+
+                # Save
+                if total_iter % savemodel_interv == 0:
+                    # if training, save the model #
+                    savefilename = saved_model_path + '/kvnet_checkpoint_iter_' + str(total_iter) + '.tar'
+                    torch.save({'iter': total_iter,
+                                'frame_count': frame_count,
+                                'ref_indx': ref_indx,
+                                'traj_idx': batch_idx,
+                                'state_dict': model_KVnet.state_dict(),
+                                'optimizer': optimizer_KV.state_dict(),
+                                'loss': 0}, savefilename)
 
 
 def train(model, optimizer_KV, local_info_valid, ngpu):
@@ -471,7 +490,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu):
         raise Exception('Batch size invalid')
 
     # Keep to middle only
-    midval = len(local_info_valid["src_dats"][0])/2
+    midval = int(len(local_info_valid["src_dats"][0])/2)
 
     # Grab ground truth digitized map
     dmap_imgsize_digit_arr = []
@@ -526,10 +545,6 @@ def train(model, optimizer_KV, local_info_valid, ngpu):
     BV_cur, BV_cur_refined = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
     # [B,128,64,96] [B,128,256,384]
 
-    print(BV_cur.get_device())
-    print(BV_cur_refined.get_device())
-    print(dmap_imgsize_digits.get_device())
-
     # NLL Loss
     loss = 0
     for ibatch in range(BV_cur.shape[0]):
@@ -539,18 +554,23 @@ def train(model, optimizer_KV, local_info_valid, ngpu):
 
     # What if we convert the DPV to a depth map, and regress that too?
 
+    # Apply the Binary CE Loss thing in Gengshan work that function
+
+    # SAVE THE MODELS
+
+    # Demonstrate light curtain on KITTI dataset
+
     # Backward
-    #loss = loss / torch.tensor(float(ngpu)).cuda(loss.get_device())
+    loss = loss / torch.tensor(float(ngpu)).cuda(loss.get_device())
     loss.backward()
     optimizer_KV.step()
 
-    print("aa")
-    pass
-
+    # Return
+    return {"loss": loss.detach().cpu().numpy()}
 
 if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        global visualizer
+        #global visualizer
         if visualizer is not None: visualizer.kill_received = True

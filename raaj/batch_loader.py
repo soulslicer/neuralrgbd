@@ -329,7 +329,7 @@ class Batch_Loader():
         for ibatch in range(self.batch_size):
             dat_array_ = self.dat_arrays[ibatch]
             src_dat_ = dat_array_
-            ref_indx = len(dat_array_)/2
+            ref_indx = int(len(dat_array_)/2)
             ref_dat_ = src_dat_[ref_indx]
             is_valid_ = _check_datArray_pose(dat_array_)
             is_valid[ibatch] = is_valid_
