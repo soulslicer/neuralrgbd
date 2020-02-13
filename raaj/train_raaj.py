@@ -423,7 +423,7 @@ def main():
 
     optimizer_KV = optim.Adam(model_KVnet.parameters(), lr = LR , betas= (.9, .999 ))
 
-    model_path_KV = args.pre_trained_model_path
+    model_path_KV = saved_model_path + "/" + args.pre_trained_model_path
     if model_path_KV is not '.' and pre_trained:
         print('loading KV_net at %s'%(model_path_KV))
         util.load_pretrained_model(model_KVnet, model_path_KV, optimizer_KV)
@@ -433,6 +433,7 @@ def main():
     # ==================================================================================== #
 
     # Vars
+    LOSS = []
     total_iter = -1
 
     # Train
@@ -450,6 +451,7 @@ def main():
 
                 if n_valid_batch > 0:
                     local_info_valid = batch_loader.get_valid_items(local_info)
+                    local_info_valid["d_candi"] = d_candi
 
                     # Test case
 
@@ -463,11 +465,31 @@ def main():
                     # Test
                     # We must do it so that it
 
+                    # Add KNet
+
+                    # Test with feedback
+
+                    # Train
                     output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu)
-                    print(output)
+                    loss_v = output["loss"]
+
+                else:
+                    loss_v = LOSS[-1]
+
+
+                # Update dat_array
+                if frame_count < BatchScheduler.traj_len-1:
+                    BatchScheduler.proceed_frame()
 
                 # Add Iterations
                 total_iter += 1
+
+                # logging #
+                if frame_count > 0:
+                    LOSS.append(loss_v)
+                    print('video batch %d / %d, iter: %d, frame_count: %d; Epoch: %d / %d, loss = %.5f'\
+                          %(batch_idx + 1, len(BatchScheduler), total_iter, frame_count, iepoch + 1, n_epoch, loss_v))
+                    writer.add_scalar('data/train_error', float(loss_v), total_iter)
 
                 # Save
                 if total_iter % savemodel_interv == 0:
@@ -479,8 +501,9 @@ def main():
                                 'traj_idx': batch_idx,
                                 'state_dict': model_KVnet.state_dict(),
                                 'optimizer': optimizer_KV.state_dict(),
-                                'loss': 0}, savefilename)
+                                'loss': loss_v}, savefilename)
 
+            BatchScheduler.proceed_batch()
 
 def train(model, optimizer_KV, local_info_valid, ngpu):
 
@@ -564,6 +587,31 @@ def train(model, optimizer_KV, local_info_valid, ngpu):
     loss = loss / torch.tensor(float(ngpu)).cuda(loss.get_device())
     loss.backward()
     optimizer_KV.step()
+
+    # # Debug Viz (comment if needed)
+    # bnum = 1
+    # img = rgb[bnum,-1,:,:,:] # [1,3,256,384]
+    # img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+    # img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+    # img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    # img = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # img = img[:,:,0]
+    # ###
+    # dmap_up_digit = dmap_imgsize_digits[bnum,:,:].unsqueeze(0) # [1,256,384] uint64
+    # d_candi = local_info_valid["d_candi"]
+    # dpv = util.digitized_to_dpv(dmap_up_digit, len(d_candi))
+    # depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi).squeeze(0).numpy() # [1,256,384]
+    # depthmap_quantized = depthmap_quantized/100.
+    # ###
+    # dpv_predicted = BV_cur_refined[bnum,:,:,:].unsqueeze(0).detach().cpu()
+    # depthmap_quantized_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True).squeeze(0).numpy()  # [1,256,384]
+    # depthmap_quantized_predicted = depthmap_quantized_predicted / 100.
+    # ###
+    # combined = np.hstack([img, depthmap_quantized, depthmap_quantized_predicted])
+    # cv2.namedWindow("win")
+    # cv2.moveWindow("win", 2500, 50)
+    # cv2.imshow("win", combined)
+    # cv2.waitKey(15)
 
     # Return
     return {"loss": loss.detach().cpu().numpy()}
