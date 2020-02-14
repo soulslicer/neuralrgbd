@@ -237,64 +237,82 @@ class D_NET_BASIC(nn.Module):
         BV - The probability cost volume for the reference view size: N x D x H x W
         '''
 
-        assert src_frames.shape[0] ==1, 'dim0 of src_frames should be 0'
+
+        # src_cam_poses [2,4,4,4]
+        # ref_frame [2,3,256,384]
+        # src_frames [2,4,3,H,W]
+
+        #assert src_frames.shape[0] ==1, 'dim0 of src_frames should be 0'
 
         # Do feature extraction for all frames #
+        bsize = src_frames.shape[0]
 
         if self.output_features:
-            feat_imgs_layer_1, feat_imgs = self.feature_extraction(torch.cat((src_frames[0,...], ref_frame),dim=0))
-            feat_img_ref_layer1 = feat_imgs_layer_1[-1,...].unsqueeze(0)
+
+            all_frames = torch.cat((src_frames, ref_frame.unsqueeze(1)), dim=1) # [2,5,3,H,W]
+            rgb_reshaped = all_frames.view(all_frames.shape[0] * all_frames.shape[1], all_frames.shape[2], all_frames.shape[3], all_frames.shape[4])
+            feat_imgs_layer_1, feat_imgs = self.feature_extraction(rgb_reshaped)  # [8,32,128,192] [8,64,64,96]
 
         else:
-            feat_imgs = self.feature_extraction(torch.cat((src_frames[0,...], ref_frame),dim=0))
+            raise('Not implemented')
 
-        feat_imgs_src = feat_imgs[:-1, ...].unsqueeze(0)
-        feat_img_ref = feat_imgs[-1, ...].unsqueeze(0) 
+        #feat_imgs_src = feat_imgs[:-1, ...].unsqueeze(0)
+        #feat_img_ref = feat_imgs[-1, ...].unsqueeze(0)
 
         if self.use_img_intensity:
-            # Get downsampling rate for image intensity feature #
-            dw_rate = int( ref_frame.shape[3] / feat_img_ref.shape[3] )
+            # Append image
+            dw_rate = int(rgb_reshaped.shape[3] / feat_imgs.shape[3])
+            img_features = F.avg_pool2d(rgb_reshaped, dw_rate)  # [8,3,64,96]
+            feat_imgs_all = torch.cat((feat_imgs, img_features), dim=1)  # [8,67,64,96]
+            feat_imgs_layer_1 = feat_imgs_layer_1.view(all_frames.shape[0], all_frames.shape[1], feat_imgs_layer_1.shape[1],
+                                                       feat_imgs_layer_1.shape[2], feat_imgs_layer_1.shape[3])
+            feat_imgs_all = feat_imgs_all.view(all_frames.shape[0], all_frames.shape[1], feat_imgs_all.shape[1],
+                                               feat_imgs_all.shape[2], feat_imgs_all.shape[3])
+        else:
+            raise ('Not implemented')
 
-            # Use image intensity as one set of features #
-            img_int_feat_ref = F.avg_pool2d( ref_frame, dw_rate)
-            feat_img_ref = torch.cat((feat_img_ref, img_int_feat_ref), dim = 1) # feat_img_ref size = [NCHW]
+        # Warp Cost Volume for each video batch
+        cost_volumes = []
+        for i in range(0, bsize):
 
-            img_int_feats_src = F.avg_pool2d(src_frames[0,...], dw_rate).unsqueeze(0)
-            feat_imgs_src = torch.cat( (feat_imgs_src, img_int_feats_src), dim=2 ) # feat_imgs_src size = [NVCHW]
+            Rs_src = src_cam_poses[i,:, :3,:3]
+            ts_src = src_cam_poses[i,:, :3,3]
 
+            # [1,67,64,96]
+            feat_img_ref = feat_imgs_all[i,-1,:,:,:].unsqueeze(0)
+            feat_imgs_src = feat_imgs_all[i,:-1,:,:,:].unsqueeze(0)
 
-        Rs_src = src_cam_poses[0, :, :3, :3]
-        ts_src = src_cam_poses[0, :, :3, 3]
+            if cam_intrinsics is None:
+                costV = warp_homo.est_swp_volume_v4( \
+                        feat_img_ref,
+                        feat_imgs_src,
+                        self.d_candi, Rs_src, ts_src,
+                        self.cam_intrinsics,
+                        self.sigma_soft_max,
+                        feat_dist = self.feat_dist,
+                        debug_ipdb = debug_ipdb)
 
+            else: # use the cam_intrinscs from the input. For scan-net this might
+                  # be different for different trajectories
+                costV = warp_homo.est_swp_volume_v4( \
+                        feat_img_ref,
+                        feat_imgs_src,
+                        self.d_candi, Rs_src, ts_src,
+                        cam_intrinsics,
+                        self.sigma_soft_max,
+                        feat_dist = self.feat_dist,
+                        debug_ipdb = debug_ipdb)
 
-        if cam_intrinsics is None:
-            costV = warp_homo.est_swp_volume_v4( \
-                    feat_img_ref, 
-                    feat_imgs_src, 
-                    self.d_candi, Rs_src, ts_src,
-                    self.cam_intrinsics,
-                    self.sigma_soft_max,
-                    feat_dist = self.feat_dist,
-                    debug_ipdb = debug_ipdb)
+            cost_volumes.append(costV)
 
-        else: # use the cam_intrinscs from the input. For scan-net this might
-              # be different for different trajectories
-            costV = warp_homo.est_swp_volume_v4( \
-                    feat_img_ref, 
-                    feat_imgs_src, 
-                    self.d_candi, Rs_src, ts_src,
-                    cam_intrinsics,
-                    self.sigma_soft_max,
-                    feat_dist = self.feat_dist,
-                    debug_ipdb = debug_ipdb)
-
+        cost_volumes = torch.cat(cost_volumes, dim=0) # [4 128 64 96]
 
         if self.refine_costV:
-            costv_out0 = self.conv0( costV )
+            costv_out0 = self.conv0( cost_volumes )
             costv_out1 = self.conv0_1( costv_out0)
             costv_out2 = self.conv0_2( costv_out1)
         else:
-            costv_out2 = costV
+            costv_out2 = cost_volumes
 
         if self.BV_log:
             BV = F.log_softmax(-costv_out2, dim=1)
@@ -315,11 +333,13 @@ class D_NET_BASIC(nn.Module):
 
         if self.output_features:
             if self.use_img_intensity:
-                return BV, [feat_img_ref[:,:-3, :,:], feat_img_ref_layer1, ]
+                return BV, [feat_imgs_all[:,-1,:-3, :,:], feat_imgs_layer_1[:,-1,:,:,:]]
             else:
+                raise ('Not implemented')
                 return BV, [feat_img_ref, feat_img_ref_layer1, ] 
 
         else:
+            raise ('Not implemented')
             return BV
 
 class baseline0(nn.Module):

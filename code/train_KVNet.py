@@ -155,6 +155,7 @@ def main():
     parser.add_argument('--dataset_path', type=str, default='.', help='Path to the dataset') 
     parser.add_argument('--change_aspect_ratio', action='store_true', default=False, 
             help='If we want to change the aspect ratio. This option is only useful for KITTI')
+    parser.add_argument('--ngpu', type=int, default=1., help='How many GPU')
 
     # para config. #
     args = parser.parse_args()
@@ -172,7 +173,8 @@ def main():
     pre_trained = args.pre_trained
     t_win_r = args.t_win
     nDepth = args.ndepth 
-    d_candi = np.linspace(args.d_min, args.d_max, nDepth) 
+    d_candi = np.linspace(args.d_min, args.d_max, nDepth)
+    d_candi_up = np.linspace(args.d_min, args.d_max, nDepth*4)
     LR = args.LR 
     sigma_soft_max = args.sigma_soft_max #10.#500.
     dnet_feature_dim = args.feature_dim
@@ -180,7 +182,8 @@ def main():
     if_clip_gradient = args.grad_clip
     grad_clip_max = args.grad_clip_max 
     d_candi_dmap_ref = d_candi
-    nDepth_dmap_ref = nDepth 
+    nDepth_dmap_ref = nDepth
+    ngpu = args.ngpu
 
     # saving model config.#
     m_misc.m_makedir(saved_model_path)
@@ -246,11 +249,9 @@ def main():
     if dataset_name == 'kitti':
         dataset = dataset_init(True, img_paths, dmap_paths, poses,
                                intrin_path = intrin_path, img_size= img_size, digitize= True,
-                               d_candi= d_candi_dmap_ref, resize_dmap=.25, crop_w = crop_w) 
+                               d_candi= d_candi_dmap_ref, d_candi_up=d_candi_up, resize_dmap=.25, crop_w = crop_w)
     else:
-        dataset = dataset_init(True, img_paths, dmap_paths, poses,
-                               intrin_path = intrin_path, img_size= img_size, digitize= True,
-                               d_candi= d_candi_dmap_ref, resize_dmap=.25) 
+        raise Exception('dataset not implemented ')
     # ================================ #
 
     print('Initnializing the KV-Net')
@@ -258,7 +259,7 @@ def main():
                                 d_candi = d_candi, sigma_soft_max = sigma_soft_max, KVNet_feature_dim = dnet_feature_dim, 
                                 d_upsample_ratio_KV_net = None, t_win_r = t_win_r, if_refined = args.RNet) 
 
-    model_KVnet = torch.nn.DataParallel(model_KVnet,  dim=0)
+    model_KVnet = torch.nn.DataParallel(model_KVnet, device_ids=range(ngpu), dim=0)
     model_KVnet.cuda(0)
 
     optimizer_KV = optim.Adam(model_KVnet.parameters(), lr = LR , betas= (.9, .999 ))
@@ -282,15 +283,23 @@ def main():
 
         for batch_idx in range(len(BatchScheduler)): 
             for frame_count, ref_indx in enumerate( range(BatchScheduler.traj_len) ): 
-                local_info = BatchScheduler.local_info() 
+                local_info = BatchScheduler.local_info_full()
                 n_valid_batch= local_info['is_valid'].sum() 
 
                 if n_valid_batch > 0: 
-                    local_info_valid = batch_loader.get_valid_items(local_info) 
-                    ref_dats_in = local_info_valid['ref_dats']
-                    src_dats_in = local_info_valid['src_dats']
-                    cam_intrin_in = local_info_valid['cam_intrins']
-                    src_cam_poses_in = torch.cat( local_info_valid['src_cam_poses'], dim=0) 
+                    local_info_valid = batch_loader.get_valid_items(local_info)
+                    ref_dats_in = []
+                    for m in range(0, len(local_info_valid['ref_dats'])):
+                        ref_dats_in.append(local_info_valid['ref_dats'][m]["left_camera"])
+                    src_dats_in = []
+                    for m in range(0, len(local_info_valid['src_dats'])):
+                        orig = []
+                        for k in range(0, len(local_info_valid['src_dats'][m])):
+                            orig.append(local_info_valid['src_dats'][m][k]["left_camera"])
+                        src_dats_in.append(orig)
+
+                    cam_intrin_in = local_info_valid['left_cam_intrins']
+                    src_cam_poses_in = torch.cat( local_info_valid['left_src_cam_poses'], dim=0)
 
                     if args.pose_noise_level > 0:
                         src_cam_poses_in = add_noise2pose( src_cam_poses_in, args.pose_noise_level)
@@ -300,7 +309,9 @@ def main():
                         BVs_predict_in = None
                         print('frame_count ==0 or invalid previous frame') 
                     else: 
-                        BVs_predict_in = batch_loader.get_valid_BVs(BVs_predict, local_info['is_valid'] ) 
+                        BVs_predict_in = batch_loader.get_valid_BVs(BVs_predict, local_info['is_valid'] )
+                        print("HACK")
+                        BVs_predict_in = None
 
                     BVs_measure, BVs_predict, loss, dmap_log_l, dmap_log_h= train_KVNet.train(
                             n_valid_batch,

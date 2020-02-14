@@ -111,9 +111,9 @@ class KVNET(nn.Module):
         2. The purpose of enforcing N=1 is for multi-gpu running
         ''' 
 
-        if isinstance(BV_predict, torch.Tensor):
-            if m_misc.valid_dpv(BV_predict):
-                assert BV_predict.shape[0] == 1 
+        # if isinstance(BV_predict, torch.Tensor):
+        #     if m_misc.valid_dpv(BV_predict):
+        #         assert BV_predict.shape[0] == 1
 
         # D-Net #
         if (self.if_refined is False) or (self.if_refined is True and self.refineNet_name != 'DPV'):
@@ -126,9 +126,9 @@ class KVNET(nn.Module):
             d_net_features.append( ref_frame )
 
         if self.if_refined:
-            dmap_cur_lowres = m_misc.depth_val_regression(BV_cur, self.d_candi, BV_log=True).unsqueeze(0) 
-
             if self.refineNet_name == 'DGF':
+                raise ('Not implemented')
+                dmap_cur_lowres = m_misc.depth_val_regression(BV_cur, self.d_candi, BV_log=True).unsqueeze(0)
                 dmap_cur_refined = self.r_net(dmap_cur_lowres, ref_frame)
             elif self.refineNet_name == 'DPV':
                 dmap_cur_refined = self.r_net(torch.exp(BV_cur), img_features = d_net_features) 
@@ -143,6 +143,8 @@ class KVNET(nn.Module):
             return dmap_cur_refined, dmap_cur_refined, BV_cur, BV_cur 
 
         else:
+            raise ('Not implemented')
+
             # KV-Net # 
             down_sample_rate = ref_frame.shape[3] / BV_cur.shape[3] 
 

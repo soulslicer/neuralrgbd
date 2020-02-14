@@ -58,7 +58,16 @@ def train(
 
     Outputs:
 
-    ''' 
+    '''
+
+
+    # Make this work with bs 4 first
+
+    # Then make it work with just image input 3
+
+    # Then change it to the new dataloader left right
+
+    # then change it to the multi process thing
 
     # prepare for the inputs #
     ref_frame = torch.cat(tuple([ref_dat['img'] for ref_dat in Ref_Dats]), dim=0)
@@ -78,25 +87,14 @@ def train(
     # model_KV supports multiple-gpus # 
     BatchIdx_range = torch.FloatTensor(np.arange(nGPU)) 
 
-    if mGPU:
-        IntMs = torch.cat([cam_intrin['intrinsic_M_cuda'].unsqueeze(0) for cam_intrin in Cam_Intrinsics ], dim=0) 
-        unit_ray_Ms_2D = torch.cat([cam_intrin['unit_ray_array_2D'].unsqueeze(0) for cam_intrin in Cam_Intrinsics ], dim=0) 
+    IntMs = torch.cat([cam_intrin['intrinsic_M_cuda'].unsqueeze(0) for cam_intrin in Cam_Intrinsics ], dim=0)
+    unit_ray_Ms_2D = torch.cat([cam_intrin['unit_ray_array_2D'].unsqueeze(0) for cam_intrin in Cam_Intrinsics ], dim=0)
+    bsize = src_frames.shape[0]
 
-        dmap_cur_refined, dmap_refined, d_dpv, kv_dpv  = model_KV(
-                ref_frame = ref_frame.cuda(0), src_frames = src_frames.cuda(0), src_cam_poses = Src_CamPoses.cuda(0), 
-                BatchIdx = BatchIdx_range.cuda(0), cam_intrinsics = None, 
-                BV_predict = BVs_predict, mGPU = mGPU, IntMs= IntMs.cuda(0), unit_ray_Ms_2D= unit_ray_Ms_2D.cuda(0)) 
-
-
-    else:
-        IntMs = None
-        unit_ray_Ms_2D = None 
-
-        dmap_cur_refined, dmap_refined, d_dpv, kv_dpv  = model_KV(
-                ref_frame = ref_frame.cuda(0), src_frames = src_frames.cuda(0), src_cam_poses = Src_CamPoses.cuda(0), 
-                BatchIdx = BatchIdx_range.cuda(0), cam_intrinsics = Cam_Intrinsics, 
-                BV_predict = BVs_predict, mGPU = mGPU, IntMs= IntMs, unit_ray_Ms_2D= unit_ray_Ms_2D) 
-
+    dmap_cur_refined, dmap_refined, d_dpv, kv_dpv  = model_KV(
+            ref_frame = ref_frame.cuda(0), src_frames = src_frames.cuda(0), src_cam_poses = Src_CamPoses.cuda(0),
+            BatchIdx = BatchIdx_range.cuda(0), cam_intrinsics = None,
+            BV_predict = BVs_predict, mGPU = mGPU, IntMs= IntMs.cuda(0), unit_ray_Ms_2D= unit_ray_Ms_2D.cuda(0))
 
     # Get losses # 
     loss = 0.  
@@ -147,7 +145,7 @@ def train(
 
     # Backward pass # 
     if mGPU:
-        loss = loss / torch.tensor(nGPU.astype(np.float)  ).cuda(loss.get_device())
+        loss = loss / torch.tensor(float(bsize)).cuda(loss.get_device())
 
     loss.backward()
     optimizer_KV.step() 
