@@ -822,8 +822,9 @@ def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     # Demonstrate light curtain on KITTI dataset
 
     # Backward
+    bsize = BV_cur.shape[0]
     optimizer_KV.zero_grad()
-    loss = loss / torch.tensor(float(ngpu)).cuda(loss.get_device())
+    loss = loss / torch.tensor(float(bsize)).cuda(loss.get_device()) # SHOULD BE DIVIDED BY BATCH SIZE!
     loss.backward()
     optimizer_KV.step()
 
