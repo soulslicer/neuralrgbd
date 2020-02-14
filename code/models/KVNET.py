@@ -99,7 +99,7 @@ class KVNET(nn.Module):
         src_cam_poses - N x V x4 x4 - relative cam poses, N = 1
         BatchIdx - e.g. for 4 gpus: [0,1,2,3], used for indexing list input for multi-gpu training 
         cam_intrinsics - list of cam_intrinsics dict. 
-        BV_predict - NDHW tensor, the predicted BV, from the last reference frame, N=1 #[1,64,64,96]
+        BV_predict - NDHW tensor, the predicted BV, from the last reference frame, N=1
 
         Outputs:
         dmap_cur_refined, dmap_kv_refined, BV_cur, BV_KV
@@ -111,30 +111,24 @@ class KVNET(nn.Module):
         2. The purpose of enforcing N=1 is for multi-gpu running
         ''' 
 
-        if isinstance(BV_predict, torch.Tensor):
-            if m_misc.valid_dpv(BV_predict):
-                assert BV_predict.shape[0] == 1 
+        # if isinstance(BV_predict, torch.Tensor):
+        #     if m_misc.valid_dpv(BV_predict):
+        #         assert BV_predict.shape[0] == 1
 
-        # D-Net # (For Features)
+        # D-Net #
         if (self.if_refined is False) or (self.if_refined is True and self.refineNet_name != 'DPV'):
-            BV_cur = self.d_net(ref_frame, src_frames, src_cam_poses, BV_predict = None, debug_ipdb= False)
+            BV_cur = self.d_net(ref_frame, src_frames, src_cam_poses, BV_predict = None, debug_ipdb= False)  
+
         else:
-            """
-            ref_frame: [1,3,256,384]
-            src_frames: [1,4,3,256,384]
-            src_cam_poses: [1,4,4,4]
-            BV_cur: [1,64,64,96]
-            d_net_features: list of 2: [1,64,64,96] [1,32,128,192] - added at append [1,3,256,384]
-            """
             BV_cur, d_net_features = self.d_net(
                     ref_frame, src_frames, src_cam_poses, BV_predict = None, debug_ipdb= False) 
 
             d_net_features.append( ref_frame )
 
         if self.if_refined:
-            dmap_cur_lowres = m_misc.depth_val_regression(BV_cur, self.d_candi, BV_log=True).unsqueeze(0) 
-
             if self.refineNet_name == 'DGF':
+                raise ('Not implemented')
+                dmap_cur_lowres = m_misc.depth_val_regression(BV_cur, self.d_candi, BV_log=True).unsqueeze(0)
                 dmap_cur_refined = self.r_net(dmap_cur_lowres, ref_frame)
             elif self.refineNet_name == 'DPV':
                 dmap_cur_refined = self.r_net(torch.exp(BV_cur), img_features = d_net_features) 
@@ -149,34 +143,63 @@ class KVNET(nn.Module):
             return dmap_cur_refined, dmap_cur_refined, BV_cur, BV_cur 
 
         else:
+            #raise ('Not implemented')
+
             # KV-Net # 
             down_sample_rate = ref_frame.shape[3] / BV_cur.shape[3] 
 
-            ref_frame_dw = F.avg_pool2d(ref_frame, int(down_sample_rate )).cuda()
-            src_frames_dw = [ F.avg_pool2d(src_frame_.unsqueeze(0), int(down_sample_rate )).cuda() 
-                             for src_frame_ in src_frames.squeeze(0)] 
+            # ref_frame # [4,3,256,384]
+            # src_frames [4,4,3,256,384]
 
-            Rs_src = [pose[:3, :3] for pose in src_cam_poses.squeeze(0)]
-            ts_src = [pose[:3, 3] for pose in src_cam_poses.squeeze(0)] 
+            kvnet_volumes = []
+            for i in range(0, ref_frame.shape[0]):
+                ref_frame_dw = F.avg_pool2d(ref_frame[i,:,:,:].unsqueeze(0), int(down_sample_rate)).cuda()
+                src_frames_dw = [F.avg_pool2d(src_frame_.unsqueeze(0), int(down_sample_rate)).cuda()
+                                 for src_frame_ in src_frames[i,:,:,:,:].squeeze(0)]
 
-            # Warp the src-frames to the ref. view # 
-            if mGPU:
-                WAPRED_src_frames = warp_homo.warp_img_feats_mgpu(src_frames_dw, self.d_candi, Rs_src, ts_src, IntMs, unit_ray_Ms_2D) 
-            else:
-                cam_intrin = cam_intrinsics[int(BatchIdx)]
-                WAPRED_src_frames = warp_homo.warp_img_feats_v3(src_frames_dw, self.d_candi, Rs_src, ts_src, cam_intrin, ) 
+                Rs_src = [pose[:3, :3] for pose in src_cam_poses[i,:,:,:]]
+                ts_src = [pose[:3, 3] for pose in src_cam_poses[i,:,:,:]]
 
-            ref_frame_dw_rep = torch.transpose(ref_frame_dw.repeat([len(self.d_candi), 1,1,1]), 0,1)
+                WAPRED_src_frames = warp_homo.warp_img_feats_mgpu(src_frames_dw, self.d_candi, Rs_src, ts_src, IntMs[i,:,:].unsqueeze(0),
+                                                                  unit_ray_Ms_2D[i,:,:].unsqueeze(0))
 
-            # Input to the KV-net #
-            kvnet_in_vol = torch.cat((torch.cat(tuple(WAPRED_src_frames), dim=0), ref_frame_dw_rep, BV_cur - BV_predict), dim=0).unsqueeze(0) 
+                ref_frame_dw_rep = torch.transpose(ref_frame_dw.repeat([len(self.d_candi), 1, 1, 1]), 0, 1) #[3,64,64,96]
+
+                # Input to the KV-net #
+                kvnet_in_vol = torch.cat(
+                    (torch.cat(tuple(WAPRED_src_frames), dim=0), ref_frame_dw_rep, BV_cur[i,:,:,:].unsqueeze(0) - BV_predict[i,:,:,:].unsqueeze(0)),
+                    dim=0).unsqueeze(0) #[1,16,64,64,96]
+                kvnet_volumes.append(kvnet_in_vol)
+
+            kvnet_in_vol = torch.cat(kvnet_volumes) #[4,16,64,64,96]
+
+            #########################
+
+            # ref_frame_dw = F.avg_pool2d(ref_frame, int(down_sample_rate )).cuda()
+            # src_frames_dw = [ F.avg_pool2d(src_frame_.unsqueeze(0), int(down_sample_rate )).cuda()
+            #                  for src_frame_ in src_frames.squeeze(0)]
+            #
+            # Rs_src = [pose[:3, :3] for pose in src_cam_poses.squeeze(0)]
+            # ts_src = [pose[:3, 3] for pose in src_cam_poses.squeeze(0)]
+            #
+            # # Warp the src-frames to the ref. view #
+            # if mGPU:
+            #     WAPRED_src_frames = warp_homo.warp_img_feats_mgpu(src_frames_dw, self.d_candi, Rs_src, ts_src, IntMs, unit_ray_Ms_2D)
+            # else:
+            #     cam_intrin = cam_intrinsics[int(BatchIdx)]
+            #     WAPRED_src_frames = warp_homo.warp_img_feats_v3(src_frames_dw, self.d_candi, Rs_src, ts_src, cam_intrin, )
+            #
+            # ref_frame_dw_rep = torch.transpose(ref_frame_dw.repeat([len(self.d_candi), 1,1,1]), 0,1)
+            #
+            # # Input to the KV-net #
+            # kvnet_in_vol = torch.cat((torch.cat(tuple(WAPRED_src_frames), dim=0), ref_frame_dw_rep, BV_cur - BV_predict), dim=0).unsqueeze(0)
 
             # Run KV-net #
-            BV_gain = self.kv_net( kvnet_in_vol )
+            BV_gain = self.kv_net( kvnet_in_vol ) #[1,16,64,64,96] -> [1,1,64,64,96]
 
             # Add back to BV_predict #
-            DPV = torch.squeeze(BV_gain, dim=1) + BV_predict
-            DPV = F.log_softmax(DPV, dim=1) 
+            DPV = torch.squeeze(BV_gain, dim=1) + BV_predict #[1,64,64,96]
+            DPV = F.log_softmax(DPV, dim=1) #[1,64,64,96]
 
             if self.if_refined:
                 dmap_lowres = m_misc.depth_val_regression(DPV, self.d_candi, BV_log=True).unsqueeze(0) 

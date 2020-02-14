@@ -14,7 +14,7 @@ import warping.homography as warp_homo
 import models.KVNET as m_kvnet
 import utils.models as utils_model
 import test_utils.export_res as export_res
-import test_utils.test_KVNet as test_KVNet
+import test_utils.test_KVNet as test_KVNet 
 
 import matplotlib as mlt
 mlt.use('Agg')
@@ -194,43 +194,8 @@ def main():
             # Read ref. and src. data in the local time window #
             ref_dat, src_dats = m_misc.split_frame_list(dat_array, t_win_r) 
 
-            """
-            '../data/datasets/kitti//rawdata/2011_09_26/2011_09_26_drive_0002_sync/image_02/data/0000000007.png'
-            
-            '../data/datasets/kitti//rawdata/2011_09_26/2011_09_26_drive_0002_sync/image_02/data/0000000005.png'
-            '../data/datasets/kitti//rawdata/2011_09_26/2011_09_26_drive_0002_sync/image_02/data/0000000006.png'
-            '../data/datasets/kitti//rawdata/2011_09_26/2011_09_26_drive_0002_sync/image_02/data/0000000008.png'
-            '../data/datasets/kitti//rawdata/2011_09_26/2011_09_26_drive_0002_sync/image_02/data/0000000009.png'
-            
-            [256, 768]
-            """
-
-            """
-            # frame_cnt and ref_indx # [0,2] [1,3] [2,4] ..
-            # ref_dat
-                "img" : [1,3,256,384]
-                "dmap": [1,64,96]
-                "dmap_imgsize": [1,256,384]
-                "dmap_mask_imgsize": [1,1,256,384] 
-                "extM": [4,4]
-                "scene_path": '../data/datasets/scan-net-5-frame/scene0534_00'
-                "img_path": '../data/datasets/scan-net-5-frame/scene0534_00/frame-000010.color.jpg'
-            # src_dats
-                src_dat: '../data/datasets/scan-net-5-frame/scene0534_00/frame-000000.color.jpg'
-                src_dat: '../data/datasets/scan-net-5-frame/scene0534_00/frame-000005.color.jpg'
-                src_dat: '../data/datasets/scan-net-5-frame/scene0534_00/frame-000015.color.jpg'
-                src_dat: '../data/datasets/scan-net-5-frame/scene0534_00/frame-000020.color.jpg'
-                
-            # At next iteration
-            ref_dat: '../data/datasets/scan-net-5-frame/scene0534_00/frame-000015.color.jpg'
-            src_dats: 5, 10, 20, 25
-            
-            [0,2]: [0, 5, (10), 15, 20]
-            [1,3]: [5, 10, (15), 20, 25]
-            """
-
             if frame_cnt ==0:
-                BVs_predict = None
+                BVs_predict = None 
 
             if valid_seq and eff_iter:
                 # Get poses #
@@ -244,7 +209,7 @@ def main():
                         for pose in src_cam_poses]
 
                 # src_cam_poses size: N V 4 4 #
-                src_cam_poses = torch.cat(src_cam_poses, dim=0).unsqueeze(0) # [1,4,4,4]
+                src_cam_poses = torch.cat(src_cam_poses, dim=0).unsqueeze(0)
                 src_frames = [m_misc.get_entries_list_dict(src_dats, 'img')] 
 
                 if frame_cnt == 0 or BVs_predict is None: # the first window for the traj.

@@ -17,6 +17,13 @@ import torch.nn.functional as F
 import torchvision
 
 
+def get_entries_list_dict_level(list_dict, keyname, lname):
+    r'''
+    Given the list of dicts, and the keyname
+    return the list [list_dict[0][keyname] ,... ]
+    '''
+    return [_dict[lname][keyname] for _dict in list_dict ]
+
 
 def get_twin_rel_pose( traj_extMs, ref_indx, t_win_r, dat_indx_step , 
         use_gt_R=False, 
