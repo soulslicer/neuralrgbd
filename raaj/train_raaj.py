@@ -367,11 +367,11 @@ class BatchSchedulerMP:
     def worker(self, inputs, queue, control):
         qmax = inputs["qmax"]
         n_epoch = inputs["n_epoch"]
-        BatchScheduler = self.load(inputs)
 
         # Iterate batch
         broken = False
         for iepoch in range(n_epoch):
+            BatchScheduler = self.load(inputs)
             for batch_idx in range(len(BatchScheduler)):
                 start = time.time()
                 for frame_count, ref_indx in enumerate(range(BatchScheduler.traj_len)):
@@ -406,11 +406,11 @@ class BatchSchedulerMP:
     def single(self, inputs):
         qmax = inputs["qmax"]
         n_epoch = inputs["n_epoch"]
-        BatchScheduler = self.load(inputs)
 
         # Iterate batch
         broken = False
         for iepoch in range(n_epoch):
+            BatchScheduler = self.load(inputs)
             for batch_idx in range(len(BatchScheduler)):
                 start = time.time()
                 for frame_count, ref_indx in enumerate(range(BatchScheduler.traj_len)):
