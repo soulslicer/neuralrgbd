@@ -8,7 +8,7 @@
 #!/bin/bash
 
 python train_KVNet.py \
-    --batch_size 4 \
+    --batch_size 2 \
 		--exp_name kitti/ \
 		--nepoch 20 \
 		--RNet \

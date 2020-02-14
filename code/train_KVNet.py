@@ -310,8 +310,8 @@ def main():
                         print('frame_count ==0 or invalid previous frame') 
                     else: 
                         BVs_predict_in = batch_loader.get_valid_BVs(BVs_predict, local_info['is_valid'] )
-                        print("HACK")
-                        BVs_predict_in = None
+                        #print("HACK")
+                        #BVs_predict_in = None
 
                     BVs_measure, BVs_predict, loss, dmap_log_l, dmap_log_h= train_KVNet.train(
                             n_valid_batch,
