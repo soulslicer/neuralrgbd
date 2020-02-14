@@ -162,12 +162,12 @@ def _read_IntM_from_pdata( p_data,  out_size = None,   mode = "left",   crop_amt
             normalize_z = True)
 
     pixel_to_ray_array_2dM = np.reshape(np.transpose( pixel_to_ray_array, axes= [2,0,1] ), [3, -1])
-    pixel_to_ray_array_2dM = torch.from_numpy(pixel_to_ray_array_2dM.astype(np.float32)).cuda()
+    pixel_to_ray_array_2dM = torch.from_numpy(pixel_to_ray_array_2dM.astype(np.float32))
     cam_intrinsic = {\
             'hfov': h_fov, 'vfov': v_fov,
             'unit_ray_array': pixel_to_ray_array,
             'unit_ray_array_2D': pixel_to_ray_array_2dM,
-            'intrinsic_M_cuda': torch.from_numpy(IntM[:3,:3].astype(np.float32)).cuda(),
+            'intrinsic_M_cuda': torch.from_numpy(IntM[:3,:3].astype(np.float32)),
             'focal_length': focal_length,
             'intrinsic_M': IntM}
     return cam_intrinsic
@@ -555,8 +555,8 @@ class KITTI_dataset(data.Dataset):
                 'img_dw': img_dw.unsqueeze_(0),
                 'dmap': dmap.unsqueeze_(0) if dmap_raw is not -1 else -1,
                 'dmap_raw': dmap_raw.unsqueeze_(0) if dmap_raw is not -1 else -1,
-                'dmap_raw_bilinear_dw': dmap_raw_bilinear_dw.unsqueeze_(0) if dmap_raw is not -1 else -1,
-                'dmap_rawsize': dmap_rawsize.unsqueeze_(0) if dmap_raw is not -1 else -1,
+                 #'dmap_raw_bilinear_dw': dmap_raw_bilinear_dw.unsqueeze_(0) if dmap_raw is not -1 else -1,
+                 #'dmap_rawsize': dmap_rawsize.unsqueeze_(0) if dmap_raw is not -1 else -1,
                 'dmap_imgsize': dmap_imgsize.unsqueeze_(0) if dmap_raw is not -1 else -1,
                 'dmap_imgsize_digit': dmap_imgsize_digit.unsqueeze_(0) if dmap_raw is not -1 else -1,
                 'dmap_up4_imgsize_digit': dmap_up4_imgsize_digit.unsqueeze_(0) if dmap_raw is not -1 else -1,

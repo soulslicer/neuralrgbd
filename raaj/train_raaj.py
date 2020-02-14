@@ -27,6 +27,15 @@ from tensorboardX import SummaryWriter
 # PCL
 #from viewer import viewer
 
+# Kill
+import sys
+import signal
+exit = 0
+def signal_handler(sig, frame):
+    global exit
+    exit = 1
+signal.signal(signal.SIGINT, signal_handler)
+
 def powerf(d_min, d_max, nDepth, power):
     f = lambda x: d_min + (d_max - 1) * x
     x = np.linspace(start=0, stop=1, num=nDepth)
@@ -277,121 +286,151 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     #     cv2.waitKey(0)
 
 
+# A Simple Python program to demonstrate working
+# of yield
+
+# A generator function that yields 1 for the first time,
+# 2 second time and 3 third time
+# def simpleGeneratorFun():
+#     yield 1
+#     yield 2
+#     yield 3
+#
+#
+# # Driver code to check above generator function
+# for value in simpleGeneratorFun():
+#     print(value)
+#
+# stop
+
 # Data Loading Module
+import torch.multiprocessing
 from torch.multiprocessing import Process, Queue, Value, cpu_count
 
 class BatchSchedulerMP:
-    def __init__(self, batch_size, fun_get_paths, dataset, nTraj, dataset_name,
-                 t_win_r, hack_num):
-
-        self.BatchScheduler = batch_loader.Batch_Loader(
-                batch_size = batch_size, fun_get_paths = fun_get_paths,
-                dataset_traj = dataset, nTraj = nTraj, dataset_name = dataset_name, t_win_r = t_win_r,
-                hack_num = hack_num)
-
+    def __init__(self, inputs, mode):
+        self.mode = mode
+        self.inputs = inputs
         self.queue = Queue()
         self.control = Value('i', 1)
-        self.process = Process(target=self.worker, args=(self.BatchScheduler, self.queue, self.control))
-        self.process.start()
+        if self.mode == 0:
+            self.process = Process(target=self.worker, args=(self.inputs, self.queue, self.control))
+            self.process.start()
+        #self.worker(self.inputs, self.queue, self.control)
 
     def stop(self):
         self.control.value = 0
 
-    def worker(self, BatchScheduler, queue, control):
+    def get_mp(self):
+        if self.mode == 0:
+            while 1:
+                items = self.queue.get()
+                if items is None: break
+                yield items
+        else:
+            for items in self.single(self.inputs):
+                if items is None: break
+                yield items
 
-        dataset_path = "../data/datasets/kitti/"
-        t_win_r = 2
+    def load(self, inputs):
+        dataset_path = inputs["dataset_path"]
+        t_win_r = inputs["t_win_r"]
+        img_size = inputs["img_size"]
+        crop_w = inputs["crop_w"]
+        d_candi = inputs["d_candi"]
+        d_candi_up = inputs["d_candi_up"]
+        dataset_name = inputs["dataset_name"]
+        hack_num = inputs["hack_num"]
+        batch_size = inputs["batch_size"]
+        qmax = inputs["qmax"]
+        n_epoch = inputs["n_epoch"]
+
         dataset_init = kitti.KITTI_dataset
         fun_get_paths = lambda traj_indx: kitti.get_paths(traj_indx, split_txt='./kitti_split/training.txt',
                                                           mode='train',
                                                           database_path_base=dataset_path, t_win=t_win_r)
-        img_size = [384, 256]
-        crop_w = None
+
         # Load Dataset
         n_scenes, _, _, _, _ = fun_get_paths(0)
         traj_Indx = np.arange(0, n_scenes)
         fldr_path, img_paths, dmap_paths, poses, intrin_path = fun_get_paths(0)
         dataset = dataset_init(True, img_paths, dmap_paths, poses,
                                intrin_path=intrin_path, img_size=img_size, digitize=True,
-                               d_candi=np.linspace(1, 30, 64), d_candi_up=np.linspace(1, 30, 64 * 4), resize_dmap=.25,
+                               d_candi=d_candi, d_candi_up=d_candi_up, resize_dmap=.25,
                                crop_w=crop_w)
         BatchScheduler = batch_loader.Batch_Loader(
-            batch_size=8, fun_get_paths=fun_get_paths,
-            dataset_traj=dataset, nTraj=len(traj_Indx), dataset_name='kitti', t_win_r=t_win_r,
-            hack_num=0)
+            batch_size=batch_size, fun_get_paths=fun_get_paths,
+            dataset_traj=dataset, nTraj=len(traj_Indx), dataset_name=dataset_name, t_win_r=t_win_r,
+            hack_num=hack_num)
+        return BatchScheduler
 
-        while 1:
-            if control.value == 0:
-                break
+    def worker(self, inputs, queue, control):
+        qmax = inputs["qmax"]
+        n_epoch = inputs["n_epoch"]
+        BatchScheduler = self.load(inputs)
 
-            # Iterate batch
+        # Iterate batch
+        broken = False
+        for iepoch in range(n_epoch):
             for batch_idx in range(len(BatchScheduler)):
                 start = time.time()
                 for frame_count, ref_indx in enumerate(range(BatchScheduler.traj_len)):
                     local_info = BatchScheduler.local_info_full()
-                    n_valid_batch = local_info['is_valid'].sum()
 
-                    if n_valid_batch > 0:
-                        local_info_valid = batch_loader.get_valid_items(local_info)
-                        pass
-                    else:
-                        pass
+                    # Queue Max
+                    while queue.qsize() >= qmax:
+                        if control.value == 0:
+                            broken = True
+                            break
+                        time.sleep(0.01)
+                    if control.value == 0:
+                        broken = True
+                        break
+
+                    # Put in Q
+                    queue.put([local_info, len(BatchScheduler), batch_idx, frame_count, ref_indx, iepoch])
 
                     # Update dat_array
                     if frame_count < BatchScheduler.traj_len - 1:
                         BatchScheduler.proceed_frame()
 
-                    print(batch_idx, frame_count)
+                    #print(batch_idx, frame_count)
+                    if broken: break
 
+                if broken: break
                 BatchScheduler.proceed_batch()
 
-            break
+            if broken: break
+        queue.put(None)
 
-            #print("work")
-            #print(BatchScheduler)
-            time.sleep(1)
+    def single(self, inputs):
+        qmax = inputs["qmax"]
+        n_epoch = inputs["n_epoch"]
+        BatchScheduler = self.load(inputs)
 
+        # Iterate batch
+        broken = False
+        for iepoch in range(n_epoch):
+            for batch_idx in range(len(BatchScheduler)):
+                start = time.time()
+                for frame_count, ref_indx in enumerate(range(BatchScheduler.traj_len)):
+                    local_info = BatchScheduler.local_info_full()
 
-dataset_path = "../data/datasets/kitti/"
-t_win_r = 2
-dataset_init = kitti.KITTI_dataset
-fun_get_paths = lambda traj_indx: kitti.get_paths(traj_indx, split_txt='./kitti_split/training.txt', mode='train',
-                                                  database_path_base=dataset_path, t_win=t_win_r)
-img_size = [384, 256]
-crop_w = None
-# Load Dataset
-n_scenes, _, _, _, _ = fun_get_paths(0)
-traj_Indx = np.arange(0, n_scenes)
-fldr_path, img_paths, dmap_paths, poses, intrin_path = fun_get_paths(0)
-dataset = dataset_init(True, img_paths, dmap_paths, poses,
-                       intrin_path=intrin_path, img_size=img_size, digitize=True,
-                       d_candi=np.linspace(1, 30, 64), d_candi_up=np.linspace(1, 30, 64*4), resize_dmap=.25, crop_w=crop_w)
+                    # Put in Q
+                    yield [local_info, len(BatchScheduler), batch_idx, frame_count, ref_indx, iepoch]
 
-b = BatchSchedulerMP(8, fun_get_paths, dataset, len(traj_Indx), 'kitti', t_win_r, 0)
+                    # Update dat_array
+                    if frame_count < BatchScheduler.traj_len - 1:
+                        BatchScheduler.proceed_frame()
 
-while 1:
-    time.sleep(1)
-    print("main")
+                    #print(batch_idx, frame_count)
+                    if broken: break
 
-#stop
+                if broken: break
+                BatchScheduler.proceed_batch()
 
-# # Data Worker
-# def work(loader, queue, control):
-#     while 1:
-#         if control.value == 0:
-#             break
-#         if queue.qsize() < 5:
-#             batch = opcaffe.Batch()
-#             myClass.load(batch)
-#             data = torch.tensor(batch.data)
-#             label = torch.tensor(batch.label)
-#             queue.put([data, label])
-#         time.sleep(0.1)
-# queue = Queue()
-# control = Value('i',1)
-# process = Process(target=work, args=(myClass, queue, control))
-# process.start()
-
+            if broken: break
+        yield None
 
 visualizer = None
 
@@ -497,9 +536,6 @@ def main():
     # Dataset #
     dataset_path = args.dataset_path
     if dataset_name == "kitti":
-        dataset_init = kitti.KITTI_dataset
-        fun_get_paths = lambda traj_indx: kitti.get_paths(traj_indx,split_txt= './kitti_split/training.txt', mode='train', database_path_base = dataset_path, t_win = t_win_r)
-
         # Cropping
         if not args.change_aspect_ratio: # we will keep the aspect ratio and do cropping
             img_size = [768, 256]
@@ -508,21 +544,33 @@ def main():
             img_size = [384, 256]
             crop_w = None
 
-        # Load Dataset
-        n_scenes , _, _, _, _ = fun_get_paths(0)
-        traj_Indx = np.arange(0, n_scenes)
-        fldr_path, img_paths, dmap_paths, poses, intrin_path = fun_get_paths(0)
-        dataset = dataset_init(True, img_paths, dmap_paths, poses,
-                               intrin_path = intrin_path, img_size= img_size, digitize= True,
-                               d_candi = d_candi_dmap_ref, d_candi_up = d_candi_up, resize_dmap=.25, crop_w = crop_w)
-
         # https://github.com/ClementPinard/SfmLearner-Pytorch/blob/master/inverse_warp.py
+
+        inputs = {
+            "dataset_path": dataset_path,
+            "t_win_r": t_win_r,
+            "img_size": img_size,
+            "crop_w": crop_w,
+            "d_candi": d_candi,
+            "d_candi_up": d_candi_up,
+            "dataset_name": "kitti",
+            "hack_num": hack_num,
+            "batch_size": batch_size,
+            "n_epoch": n_epoch,
+            "qmax": 1
+        }
+        b = BatchSchedulerMP(inputs, 0)
+
+    if b.mode == 0:
+        print("Preloading..")
+        while b.queue.qsize() < b.inputs["qmax"]:
+            time.sleep(0.1)
 
     # ==================================================================================== #
 
     # Model
     print('Init Network - Assume left usage')
-    model_KVnet = KVNET(feature_dim = dnet_feature_dim, cam_intrinsics = dataset.left_cam_intrinsics,
+    model_KVnet = KVNET(feature_dim = dnet_feature_dim, cam_intrinsics = None,
                         d_candi = d_candi, d_candi_up = d_candi_up, sigma_soft_max = sigma_soft_max, KVNet_feature_dim = dnet_feature_dim,
                         d_upsample_ratio_KV_net = None)
 
@@ -538,6 +586,7 @@ def main():
         util.load_pretrained_model(model_KVnet, model_path_KV, optimizer_KV)
 
     print('Done')
+    global exit
 
     # ==================================================================================== #
 
@@ -545,93 +594,152 @@ def main():
     LOSS = []
     total_iter = -1
 
-    # Train
-    for iepoch in range(n_epoch):
-        BatchScheduler = batch_loader.Batch_Loader(
-                batch_size = batch_size, fun_get_paths = fun_get_paths,
-                dataset_traj = dataset, nTraj=len(traj_Indx), dataset_name = dataset_name, t_win_r = t_win_r,
-                hack_num = hack_num)
+    # Keep Getting
+    start = time.time()
+    for items in b.get_mp():
+        end = time.time()
+        print("Data: " + str(end - start))
+        # Exit
+        if exit:
+            print("Exiting")
+            b.stop()
+            sys.exit()
 
-        # Iterate batch
-        for batch_idx in range(len(BatchScheduler)):
-            start = time.time()
-            for frame_count, ref_indx in enumerate( range(BatchScheduler.traj_len)):
-                local_info = BatchScheduler.local_info_full()
-                n_valid_batch = local_info['is_valid'].sum()
+        # Get data
+        local_info, batch_length, batch_idx, frame_count, ref_indx, iepoch = items
+        if local_info is None:
+            print("Ending")
+            b.stop()
+            time.sleep(2)
+            del b
+            break
 
-                if n_valid_batch > 0:
-                    local_info_valid = batch_loader.get_valid_items(local_info)
-                    local_info_valid["d_candi"] = d_candi
+        #import copy
+        #local_info = copy.deepcopy(local_info)
 
-                    # Put the data loader seperate?
-                    # It runs its epochs and its enumerator as per normal
-                    # Dumps it into a queue, that this then reads out
-                    # Flag to indicate ending?
-                    # Class function to call start and stop to reboot it - or just kill and respawn
-                    # Pass in Test or Train
+        # Process
+        n_valid_batch = local_info['is_valid'].sum()
+        if n_valid_batch > 0:
+            local_info_valid = batch_loader.get_valid_items(local_info)
+            local_info_valid["d_candi"] = d_candi
 
-                    # Generate a map of laser angle - laser thickness uncertainity
+            # Train
+            print("Data")
+            output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, total_iter)
+            loss_v = output["loss"]
+            #loss_v = 0
+        else:
+            loss_v = LOSS[-1]
+            pass
 
-                    # Test case
+        # Add Iterations
+        total_iter += 1
 
-                    # Noise to Pose?
+        # logging #
+        if frame_count > 0:
+            LOSS.append(loss_v)
+            print('video batch %d / %d, iter: %d, frame_count: %d; Epoch: %d / %d, loss = %.5f'\
+                  %(batch_idx + 1, batch_length, total_iter, frame_count, iepoch + 1, n_epoch, loss_v))
+            writer.add_scalar('data/train_error', float(loss_v), total_iter)
 
-                    # The log_softmax input should not be negative! (I CHANGED IT)
+        # Save
+        if total_iter % savemodel_interv == 0:
+            # if training, save the model #
+            savefilename = saved_model_path + '/kvnet_checkpoint_iter_' + str(total_iter) + '.tar'
+            torch.save({'iter': total_iter,
+                        'frame_count': frame_count,
+                        'ref_indx': ref_indx,
+                        'traj_idx': batch_idx,
+                        'state_dict': model_KVnet.state_dict(),
+                        'optimizer': optimizer_KV.state_dict(),
+                        'loss': loss_v}, savefilename)
 
-                    if viz:
-                        viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+        # Note time
+        start = time.time()
 
-                    # Test
-                    # We must do it so that it
+        # # Iterate batch
+        # for batch_idx in range(len(BatchScheduler)):
+        #     start = time.time()
+        #     for frame_count, ref_indx in enumerate( range(BatchScheduler.traj_len)):
+        #         local_info = BatchScheduler.local_info_full()
+        #         n_valid_batch = local_info['is_valid'].sum()
+        #
+        #         if n_valid_batch > 0:
+        #             local_info_valid = batch_loader.get_valid_items(local_info)
+        #             local_info_valid["d_candi"] = d_candi
 
-                    # Add KNet
+                        # refine_costV - False	costv negative	64 Depth (TEST THESE)
 
-                    # Test with feedback
-
-                    # NAN at
-                    # video batch 4 / 18, iter: 450, frame_count: 237; Epoch: 1 / 20, loss = 126.69191
-                    # video batch 4 / 18, iter: 451, frame_count: 238; Epoch: 1 / 20, loss = nan
-
-                    end = time.time()
-                    print(end - start)
-                    start = time.time()
-
-
-                    # Train
-                    output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, total_iter)
-                    loss_v = output["loss"]
-
-                else:
-                    loss_v = LOSS[-1]
-
-
-                # Update dat_array
-                if frame_count < BatchScheduler.traj_len-1:
-                    BatchScheduler.proceed_frame()
-
-                # Add Iterations
-                total_iter += 1
-
-                # logging #
-                if frame_count > 0:
-                    LOSS.append(loss_v)
-                    print('video batch %d / %d, iter: %d, frame_count: %d; Epoch: %d / %d, loss = %.5f'\
-                          %(batch_idx + 1, len(BatchScheduler), total_iter, frame_count, iepoch + 1, n_epoch, loss_v))
-                    writer.add_scalar('data/train_error', float(loss_v), total_iter)
-
-                # Save
-                if total_iter % savemodel_interv == 0:
-                    # if training, save the model #
-                    savefilename = saved_model_path + '/kvnet_checkpoint_iter_' + str(total_iter) + '.tar'
-                    torch.save({'iter': total_iter,
-                                'frame_count': frame_count,
-                                'ref_indx': ref_indx,
-                                'traj_idx': batch_idx,
-                                'state_dict': model_KVnet.state_dict(),
-                                'optimizer': optimizer_KV.state_dict(),
-                                'loss': loss_v}, savefilename)
-
-            BatchScheduler.proceed_batch()
+        #
+        #             # Put the data loader seperate?
+        #             # It runs its epochs and its enumerator as per normal
+        #             # Dumps it into a queue, that this then reads out
+        #             # Flag to indicate ending?
+        #             # Class function to call start and stop to reboot it - or just kill and respawn
+        #             # Pass in Test or Train
+        #
+        #             # Generate a map of laser angle - laser thickness uncertainity
+        #
+        #             # Test case
+        #
+        #             # Noise to Pose?
+        #
+        #             # The log_softmax input should not be negative! (I CHANGED IT)
+        #
+        #             if viz:
+        #                 viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+        #
+        #             # Test
+        #             # We must do it so that it
+        #
+        #             # Add KNet
+        #
+        #             # Test with feedback
+        #
+        #             # NAN at
+        #             # video batch 4 / 18, iter: 450, frame_count: 237; Epoch: 1 / 20, loss = 126.69191
+        #             # video batch 4 / 18, iter: 451, frame_count: 238; Epoch: 1 / 20, loss = nan
+        #
+        #             end = time.time()
+        #             print(end - start)
+        #             start = time.time()
+        #
+        #
+        #             # Train
+        #             output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, total_iter)
+        #             loss_v = output["loss"]
+        #
+        #         else:
+        #             loss_v = LOSS[-1]
+        #
+        #
+        #         # Update dat_array
+        #         if frame_count < BatchScheduler.traj_len-1:
+        #             BatchScheduler.proceed_frame()
+        #
+        #         # Add Iterations
+        #         total_iter += 1
+        #
+        #         # logging #
+        #         if frame_count > 0:
+        #             LOSS.append(loss_v)
+        #             print('video batch %d / %d, iter: %d, frame_count: %d; Epoch: %d / %d, loss = %.5f'\
+        #                   %(batch_idx + 1, len(BatchScheduler), total_iter, frame_count, iepoch + 1, n_epoch, loss_v))
+        #             writer.add_scalar('data/train_error', float(loss_v), total_iter)
+        #
+        #         # Save
+        #         if total_iter % savemodel_interv == 0:
+        #             # if training, save the model #
+        #             savefilename = saved_model_path + '/kvnet_checkpoint_iter_' + str(total_iter) + '.tar'
+        #             torch.save({'iter': total_iter,
+        #                         'frame_count': frame_count,
+        #                         'ref_indx': ref_indx,
+        #                         'traj_idx': batch_idx,
+        #                         'state_dict': model_KVnet.state_dict(),
+        #                         'optimizer': optimizer_KV.state_dict(),
+        #                         'loss': loss_v}, savefilename)
+        #
+        #     BatchScheduler.proceed_batch()
 
 def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     start = time.time()
@@ -719,7 +827,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     optimizer_KV.step()
 
     # Debug Viz (comment if needed)
-    if total_iter % 10 == 0:
+    if total_iter % 10 == -1:
         bnum = 0
         img = rgb[bnum,-1,:,:,:] # [1,3,256,384]
         img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
