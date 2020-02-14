@@ -598,7 +598,7 @@ def main():
     start = time.time()
     for items in b.get_mp():
         end = time.time()
-        print("Data: " + str(end - start))
+        #print("Data: " + str(end - start))
         # Exit
         if exit:
             print("Exiting")
@@ -624,7 +624,6 @@ def main():
             local_info_valid["d_candi"] = d_candi
 
             # Train
-            print("Data")
             output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, total_iter)
             loss_v = output["loss"]
             #loss_v = 0
@@ -643,7 +642,8 @@ def main():
             writer.add_scalar('data/train_error', float(loss_v), total_iter)
 
         # Save
-        if total_iter % savemodel_interv == 0:
+        if total_iter % savemodel_interv == 0 and total_iter != 0:
+            print("Saving..")
             # if training, save the model #
             savefilename = saved_model_path + '/kvnet_checkpoint_iter_' + str(total_iter) + '.tar'
             torch.save({'iter': total_iter,
@@ -822,6 +822,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     # Demonstrate light curtain on KITTI dataset
 
     # Backward
+    optimizer_KV.zero_grad()
     loss = loss / torch.tensor(float(ngpu)).cuda(loss.get_device())
     loss.backward()
     optimizer_KV.step()
