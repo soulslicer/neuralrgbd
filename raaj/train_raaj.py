@@ -583,7 +583,9 @@ def main():
     model_path_KV = saved_model_path + "/" + args.pre_trained_model_path
     if model_path_KV is not '.' and pre_trained:
         print('loading KV_net at %s'%(model_path_KV))
-        util.load_pretrained_model(model_KVnet, model_path_KV, optimizer_KV)
+        lparams = util.load_pretrained_model(model_KVnet, model_path_KV, optimizer_KV)
+    else:
+        lparams = None
 
     print('Done')
     global exit
@@ -591,8 +593,14 @@ def main():
     # ==================================================================================== #
 
     # Vars
-    LOSS = []
-    total_iter = -1
+    if lparams is not None:
+        LOSS = []
+        total_iter = lparams["iter"]
+    else:
+        LOSS = []
+        total_iter = -1
+
+    # Load total iter from pretrained
 
     # Keep Getting
     start = time.time()

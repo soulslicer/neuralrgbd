@@ -38,6 +38,8 @@ def load_pretrained_model(model, pretrained_path, optimizer = None):
         optimizer.load_state_dict(pre_model_dict_info['optimizer'])
         print('Also loaded the optimizer status')
 
+    return {"iter": pre_model_dict_info['iter']}
+
 # Not diff
 def digitized_to_dpv(depth_digit, N):
     if depth_digit.shape[0] != 1:
