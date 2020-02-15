@@ -60,7 +60,7 @@ def dpv_to_depthmap(dpv, d_candi, BV_log=False):
     if dpv.shape[0] != 1:
         raise Exception('Unable to handle this case')
 
-    depth_regress = torch.zeros(1, dpv.shape[2], dpv.shape[3])
+    depth_regress = torch.zeros(1, dpv.shape[2], dpv.shape[3]).cuda()
     for idx_d, d in enumerate(d_candi):
         if BV_log:
             depth_regress = depth_regress + torch.exp(dpv[0,idx_d,:,:]) * d
