@@ -334,6 +334,7 @@ def main():
     parser.add_argument('--test_interval', type=int, default=1000, help='Test Interval')
     parser.add_argument('--test', action='store_true', default=False,
                         help='Testing (False)')
+    parser.add_argument('--pre_trained_folder', type=str, default='.', help='The pre-trained folder to evaluate')
 
     #hack_num = 326
     hack_num = 0
@@ -344,6 +345,7 @@ def main():
     # Arguments Parsing
     args = parser.parse_args()
     test_interval = args.test_interval
+    pre_trained_folder = args.pre_trained_folder
     test = args.test
     exp_name = args.exp_name
     saved_model_path = './outputs/saved_models/%s'%(exp_name)
@@ -479,9 +481,38 @@ def main():
     print('Done')
     global exit
 
+    # Evaluate Model Graph
+    if len(pre_trained_folder):
+        import re
+        def natural_sort(l):
+            convert = lambda text: int(text) if text.isdigit() else text.lower()
+            alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+            return sorted(l, key=alphanum_key)
+        all_files = []
+        for subdir, dirs, files in os.walk(pre_trained_folder):
+            for file in files:
+                all_files.append(os.path.join(subdir, file))
+        all_files = natural_sort(all_files)
+        model_KVnet.eval()
+        rmses = []
+        sils = []
+        for file in all_files:
+            print(file)
+            util.load_pretrained_model(model_KVnet, file, None)
+            results = testing(model_KVnet, btest, d_candi)
+            rmses.append(results["rmse"][0])
+            sils.append(results["scale invariant log"][0])
+        print("RMSES")
+        print(rmses)
+        print("SILS")
+        print(sils)
+        sys.exit()
+
     # Test
     if test:
-        testing(model_KVnet, btest, d_candi)
+        model_KVnet.eval()
+        results = testing(model_KVnet, btest, d_candi)
+        print(results)
         sys.exit()
 
     # ==================================================================================== #
@@ -639,6 +670,10 @@ def generate_model_input(local_info_valid):
     return model_input, gt_input
 
 def testing(model, btest, d_candi):
+    import deval.pyevaluatedepth_lib as dlib
+    epsilon = sys.float_info.epsilon
+    all_errors = []
+
     for items in btest.get_mp():
         if exit:
             print("Exiting")
@@ -672,42 +707,45 @@ def testing(model, btest, d_candi):
             # Masks
             depth_mask = gt_input["masks"][0,:,:,:].float().cuda()
 
-            # Cost
-            error = torch.sum(((depthmap_predicted - depthmap_truth)*depth_mask).pow(2))
-
-            # 5802936.
-            # 339888.7500
-
-            print(error)
-
-            # Display
-            img = model_input["rgb"][0, -1, :, :, :]  # [1,3,256,384]
-            img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-            img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-            img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-            img_color = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-            img = img_color[:, :, 0]
-            #print(img.shape)
-            depthmap_predicted_np = (depthmap_predicted).squeeze(0).cpu().numpy()
+            # Generate Numpy
+            depthmap_predicted_np = (depthmap_predicted * depth_mask).squeeze(0).cpu().numpy()
             depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
-            #
-            combined = np.hstack([img, depthmap_truth_np/100., depthmap_predicted_np/100.])
-            cv2.namedWindow("win")
-            cv2.moveWindow("win", 2500, 50)
-            cv2.imshow("win", combined)
-            key = cv2.waitKey(15)
-            if key == 27:
-                sys.exit()
+
+            # Error
+            errors = dlib.depthError(depthmap_predicted_np + epsilon, depthmap_truth_np + epsilon)
+            all_errors.append(errors)
+
+            # # Cost
+            # #error = torch.sum(((depthmap_predicted - depthmap_truth)*depth_mask).pow(2))
+            # #print(error)
+            # # Display
+            # img = model_input["rgb"][0, -1, :, :, :]  # [1,3,256,384]
+            # img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+            # img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+            # img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+            # img_color = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+            # img = img_color[:, :, 0]
+            # #print(img.shape)
+            # depthmap_predicted_np = (depthmap_predicted * 1).squeeze(0).cpu().numpy()
+            # depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
+            # #
+            # combined = np.hstack([img, depthmap_truth_np/100., depthmap_predicted_np/100.])
+            # cv2.namedWindow("win")
+            # cv2.moveWindow("win", 2500, 50)
+            # cv2.imshow("win", combined)
+            # key = cv2.waitKey(15)
+            # if key == 27:
+            #     sys.exit()
 
 
-            print(depthmap_predicted.shape)
-            print(depthmap_truth.shape)
+            #print(depthmap_predicted.shape)
+            #print(depthmap_truth.shape)
 
         else:
             pass
 
-
-    pass
+    results = dlib.evaluateErrors(all_errors)
+    return results
 
 def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     start = time.time()
@@ -870,6 +908,7 @@ class BatchSchedulerMP:
 
             if broken: break
         queue.put(None)
+        time.sleep(1)
 
     def single(self, inputs):
         qmax = inputs["qmax"]
@@ -884,8 +923,8 @@ class BatchSchedulerMP:
                 for frame_count, ref_indx in enumerate(range(BatchScheduler.traj_len)):
                     local_info = BatchScheduler.local_info_full()
 
-                    if frame_count == 0:
-                       print(local_info["src_dats"][0][0]["left_camera"]["img_path"])
+                    #if frame_count == 0:
+                    #   print(local_info["src_dats"][0][0]["left_camera"]["img_path"])
 
                     # Put in Q
                     yield [local_info, len(BatchScheduler), batch_idx, frame_count, ref_indx, iepoch]
