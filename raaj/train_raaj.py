@@ -334,7 +334,7 @@ def main():
     parser.add_argument('--test_interval', type=int, default=1000, help='Test Interval')
     parser.add_argument('--test', action='store_true', default=False,
                         help='Testing (False)')
-    parser.add_argument('--pre_trained_folder', type=str, default='.', help='The pre-trained folder to evaluate')
+    parser.add_argument('--pre_trained_folder', type=str, default='', help='The pre-trained folder to evaluate')
 
     #hack_num = 326
     hack_num = 0
@@ -422,7 +422,7 @@ def main():
             "d_candi_up": d_candi_up,
             "dataset_name": "kitti",
             "hack_num": hack_num,
-            "batch_size": 1,
+            "batch_size": batch_size,
             "n_epoch": 1,
             "qmax": 1,
             "mode": "val"
@@ -499,7 +499,7 @@ def main():
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
-            results = testing(model_KVnet, btest, d_candi)
+            results = testing(model_KVnet, btest, d_candi, ngpu)
             rmses.append(results["rmse"][0])
             sils.append(results["scale invariant log"][0])
         print("RMSES")
@@ -511,7 +511,7 @@ def main():
     # Test
     if test:
         model_KVnet.eval()
-        results = testing(model_KVnet, btest, d_candi)
+        results = testing(model_KVnet, btest, d_candi, ngpu)
         print(results)
         sys.exit()
 
@@ -669,7 +669,7 @@ def generate_model_input(local_info_valid):
 
     return model_input, gt_input
 
-def testing(model, btest, d_candi):
+def testing(model, btest, d_candi, ngpu):
     import deval.pyevaluatedepth_lib as dlib
     epsilon = sys.float_info.epsilon
     all_errors = []
@@ -695,51 +695,55 @@ def testing(model, btest, d_candi):
 
             # Stuff
             #BV_cur, BV_cur_refined = model(model_input)
-            BV_cur, BV_cur_refined = torch.nn.parallel.data_parallel(model, model_input, range(1))
-
-            # Predicted
-            dpv_predicted = BV_cur_refined[0, :, :, :].unsqueeze(0).detach()
-            depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)  # [1,256,384]
+            BV_cur_all, BV_cur_refined_all = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
 
             # Truth
-            depthmap_truth = gt_input["dmap_imgsizes"] # [1,256,384]
+            depthmap_truth_all = gt_input["dmap_imgsizes"] # [1,256,384]
 
             # Masks
-            depth_mask = gt_input["masks"][0,:,:,:].float().cuda()
+            depth_mask_all = gt_input["masks"][:,:,:,:].float().cuda()
 
-            # Generate Numpy
-            depthmap_predicted_np = (depthmap_predicted * depth_mask).squeeze(0).cpu().numpy()
-            depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
+            # Batch
+            bsize = BV_cur_refined_all.shape[0]
+            for b in range(bsize):
+                BV_cur_refined = BV_cur_refined_all[b,:,:,:].unsqueeze(0)
+                depthmap_truth = depthmap_truth_all[b,:,:].unsqueeze(0)
+                depth_mask = depth_mask_all[b,:,:,:]
 
-            # Error
-            errors = dlib.depthError(depthmap_predicted_np + epsilon, depthmap_truth_np + epsilon)
-            all_errors.append(errors)
+                # Predicted
+                dpv_predicted = BV_cur_refined[0, :, :, :].unsqueeze(0).detach()
+                depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)  # [1,256,384]
 
-            # # Cost
-            # #error = torch.sum(((depthmap_predicted - depthmap_truth)*depth_mask).pow(2))
-            # #print(error)
-            # # Display
-            # img = model_input["rgb"][0, -1, :, :, :]  # [1,3,256,384]
-            # img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-            # img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-            # img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-            # img_color = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-            # img = img_color[:, :, 0]
-            # #print(img.shape)
-            # depthmap_predicted_np = (depthmap_predicted * 1).squeeze(0).cpu().numpy()
-            # depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
-            # #
-            # combined = np.hstack([img, depthmap_truth_np/100., depthmap_predicted_np/100.])
-            # cv2.namedWindow("win")
-            # cv2.moveWindow("win", 2500, 50)
-            # cv2.imshow("win", combined)
-            # key = cv2.waitKey(15)
-            # if key == 27:
-            #     sys.exit()
+                # Generate Numpy
+                depthmap_predicted_np = (depthmap_predicted * depth_mask).squeeze(0).cpu().numpy()
+                depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
 
+                # Error
+                errors = dlib.depthError(depthmap_predicted_np + epsilon, depthmap_truth_np + epsilon)
+                all_errors.append(errors)
 
-            #print(depthmap_predicted.shape)
-            #print(depthmap_truth.shape)
+                # # Cost
+                # #error = torch.sum(((depthmap_predicted - depthmap_truth)*depth_mask).pow(2))
+                # #print(error)
+                # # Display
+                # img = model_input["rgb"][b, -1, :, :, :]  # [1,3,256,384]
+                # img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+                # img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+                # img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+                # img_color = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+                # img = img_color[:, :, 0]
+                # #print(img.shape)
+                # depthmap_predicted_np = (depthmap_predicted * 1).squeeze(0).cpu().numpy()
+                # depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
+                # #
+                # combined = np.hstack([img, depthmap_truth_np/100., depthmap_predicted_np/100.])
+                # cv2.namedWindow("win")
+                # cv2.moveWindow("win", 2500, 50)
+                # cv2.imshow("win", combined)
+                # key = cv2.waitKey(15)
+                # if key == 27:
+                #     sys.exit()
+                # break
 
         else:
             pass
