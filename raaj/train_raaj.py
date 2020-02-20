@@ -53,15 +53,16 @@ def hack(cloud):
         fcloud[i] = cloud[i]
     return fcloud
 
-def tocloud(depth, rgb, intr, extr):
+def tocloud(depth, rgb, intr, extr=None):
     pts = util.depth_to_pts(depth, intr)
     pts = pts.reshape((3, pts.shape[1] * pts.shape[2]))
     # pts_numpy = pts.numpy()
 
     # Attempt to transform
-    transform = torch.inverse(extr)
     pts = torch.cat([pts, torch.ones((1, pts.shape[1]))])
-    pts = torch.matmul(transform, pts)
+    if extr is not None:
+        transform = torch.inverse(extr)
+        pts = torch.matmul(transform, pts)
     pts_numpy = pts[0:3, :].numpy()
 
     # Convert Color
@@ -215,79 +216,79 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     Left Viz Pt Cloud
     """
 
-    # # (Debug Visualize - Left)
-    # batch_num = 1
-    # for idx, datum in enumerate(src_dats_in[batch_num]):
-    #     datum = datum["left_camera"]
-    #     print(datum["img_path"])
-    #
-    #     # Images
-    #     rgb_img = datum["img"][0, :, :, :].numpy()
-    #     rgb_lowres_img = datum["img_dw"][0, :, :, :].numpy()
-    #     rgb_img[0, :, :] = rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-    #     rgb_img[1, :, :] = rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-    #     rgb_img[2, :, :] = rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-    #     rgb_lowres_img[0, :, :] = rgb_lowres_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-    #     rgb_lowres_img[1, :, :] = rgb_lowres_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-    #     rgb_lowres_img[2, :, :] = rgb_lowres_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-    #     gray_img = datum["img_gray"][0, 0, :, :].numpy()
-    #     depth_imgsize = datum["dmap_imgsize"]
-    #     depth_mask = depth_imgsize > 0.;
-    #     depth_mask = depth_mask.float()
-    #     depth_digit = datum["dmap_imgsize_digit"]
-    #     depth_digit_up = datum["dmap_up4_imgsize_digit"]
-    #     depth_digit_lowres = datum["dmap"]
-    #     transform = left_src_cam_poses_in[batch_num, idx, :, :]
-    #
-    #     # Low Res Depth Quantized
-    #     dpv = util.digitized_to_dpv(depth_digit_lowres, len(d_candi))
-    #     depthmap_lowres_quantized = util.dpv_to_depthmap(dpv, d_candi)
-    #     #depthmap_lowres_quantized = datum["dmap_raw"]
-    #
-    #     # Low Depth Quantized
-    #     dpv = util.digitized_to_dpv(depth_digit, len(d_candi))
-    #     depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi) * depth_mask
-    #
-    #     # High Depth Quantized
-    #     dpv = util.digitized_to_dpv(depth_digit_up, len(d_candi_up))
-    #     depthmap_up_quantized = util.dpv_to_depthmap(dpv, d_candi_up) * depth_mask
-    #
-    #     # Original Depth Map
-    #     depthmap_orig = depth_imgsize
-    #
-    #     # Intr change
-    #     intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
-    #     intr[2, 2] = 1;
-    #
-    #     # Cloud
-    #     cloud_orig = tocloud(depthmap_orig, rgb_img, intr, transform)
-    #     cloud_quantized = tocloud(depthmap_quantized, rgb_img, intr, transform)
-    #     cloud_up_quantized = tocloud(depthmap_up_quantized, rgb_img, intr, transform)
-    #     cloud_lowres_quantized = tocloud(depthmap_lowres_quantized, rgb_lowres_img, left_cam_intrin_in[batch_num]["intrinsic_M"], transform)
-    #
-    #     cloud_quantized[:,1] += 2.;
-    #     cloud_up_quantized[:, 1] += 2.;
-    #
-    #     # Cloud for distance
-    #     dcloud = []
-    #     for m in range(0, 30):
-    #         dcloud.append([0,2,m, 255,255,255, 0,0,0])
-    #     dcloud = np.array(dcloud).astype(np.float32)
-    #
-    #     # IMPLEMENT SOFT TARGET ALGO
-    #     # DO DURING TRAINING TIME BUT HOW
-    #
-    #     #visualizer.addCloud(cloud_orig, 2)
-    #     visualizer.addCloud(cloud_up_quantized, 2)
-    #     #visualizer.addCloud(cloud_lowres_quantized, 3)
-    #     visualizer.addCloud(dcloud, 4)
-    #     visualizer.swapBuffer()
-    #
-    #     # Visualize RGB Image
-    #     rgb_img = rgb_img.transpose(1, 2, 0)
-    #     rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB)
-    #     cv2.imshow("win", rgb_img)
-    #     cv2.waitKey(0)
+    # (Debug Visualize - Left)
+    batch_num = 0
+    for idx, datum in enumerate(src_dats_in[batch_num]):
+        datum = datum["left_camera"]
+        print(datum["img_path"])
+
+        # Images
+        rgb_img = datum["img"][0, :, :, :].numpy()
+        rgb_lowres_img = datum["img_dw"][0, :, :, :].numpy()
+        rgb_img[0, :, :] = rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+        rgb_img[1, :, :] = rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+        rgb_img[2, :, :] = rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+        rgb_lowres_img[0, :, :] = rgb_lowres_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+        rgb_lowres_img[1, :, :] = rgb_lowres_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+        rgb_lowres_img[2, :, :] = rgb_lowres_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+        gray_img = datum["img_gray"][0, 0, :, :].numpy()
+        depth_imgsize = datum["dmap_imgsize"]
+        depth_mask = depth_imgsize > 0.;
+        depth_mask = depth_mask.float()
+        depth_digit = datum["dmap_imgsize_digit"]
+        depth_digit_up = datum["dmap_up4_imgsize_digit"]
+        depth_digit_lowres = datum["dmap"]
+        transform = left_src_cam_poses_in[batch_num, idx, :, :]
+
+        # Low Res Depth Quantized
+        #dpv = util.digitized_to_dpv(depth_digit_lowres, len(d_candi))
+        #depthmap_lowres_quantized = util.dpv_to_depthmap(dpv, d_candi)
+        #depthmap_lowres_quantized = datum["dmap_raw"]
+
+        # Low Depth Quantized
+        dpv = util.digitized_to_dpv(depth_digit, len(d_candi))
+        depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi) * depth_mask
+
+        # High Depth Quantized
+        dpv = util.digitized_to_dpv(depth_digit_up, len(d_candi_up))
+        depthmap_up_quantized = util.dpv_to_depthmap(dpv, d_candi_up) * depth_mask
+
+        # Original Depth Map
+        depthmap_orig = depth_imgsize
+
+        # Intr change
+        intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
+        intr[2, 2] = 1;
+
+        # Cloud
+        cloud_orig = tocloud(depthmap_orig, rgb_img, intr, transform)
+        cloud_quantized = tocloud(depthmap_quantized, rgb_img, intr, transform)
+        cloud_up_quantized = tocloud(depthmap_up_quantized, rgb_img, intr, transform)
+        #cloud_lowres_quantized = tocloud(depthmap_lowres_quantized, rgb_lowres_img, left_cam_intrin_in[batch_num]["intrinsic_M"], transform)
+
+        cloud_quantized[:,1] += 0.;
+        cloud_up_quantized[:, 1] += 0.;
+
+        # Cloud for distance
+        dcloud = []
+        for m in range(0, 30):
+            dcloud.append([0,0,m, 255,255,255, 0,0,0])
+        dcloud = np.array(dcloud).astype(np.float32)
+
+        # IMPLEMENT SOFT TARGET ALGO
+        # DO DURING TRAINING TIME BUT HOW
+
+        #visualizer.addCloud(cloud_orig, 2)
+        visualizer.addCloud(cloud_up_quantized, 2)
+        #visualizer.addCloud(cloud_lowres_quantized, 3)
+        visualizer.addCloud(dcloud, 4)
+        visualizer.swapBuffer()
+
+        # Visualize RGB Image
+        rgb_img = rgb_img.transpose(1, 2, 0)
+        rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB)
+        cv2.imshow("win", rgb_img)
+        cv2.waitKey(0)
 
 
 
@@ -325,8 +326,8 @@ def main():
     parser.add_argument('--feature_dim', type=int, default=64, help='The feature dimension for the feature extractor; default=64')
     parser.add_argument('--batch_size', type=int, default = 0, help='The batch size for training; default=0, means batch_size=nGPU')
     # Dataset #
-    parser.add_argument('--dataset', type=str, default='scanNet', help='Dataset name: {scanNet, kitti,}') 
-    parser.add_argument('--dataset_path', type=str, default='.', help='Path to the dataset') 
+    parser.add_argument('--dataset', type=str, default='scanNet', help='Dataset name: {scanNet, kitti,}')
+    parser.add_argument('--dataset_path', type=str, default='.', help='Path to the dataset')
     parser.add_argument('--change_aspect_ratio', action='store_true', default=False, help='If we want to change the aspect ratio. This option is only useful for KITTI')
     parser.add_argument('--viz', action='store_true', help='viz')
     parser.add_argument('--qpower', type=float, default=1., help='How much exp quantization wanted')
@@ -335,6 +336,8 @@ def main():
     parser.add_argument('--test', action='store_true', default=False,
                         help='Testing (False)')
     parser.add_argument('--pre_trained_folder', type=str, default='', help='The pre-trained folder to evaluate')
+    parser.add_argument('--velodyne_depth', action='store_true', default=False,
+                        help='velodyne_depth (False)')
 
     #hack_num = 326
     hack_num = 0
@@ -345,6 +348,7 @@ def main():
     # Arguments Parsing
     args = parser.parse_args()
     test_interval = args.test_interval
+    velodyne_depth = args.velodyne_depth
     pre_trained_folder = args.pre_trained_folder
     test = args.test
     exp_name = args.exp_name
@@ -407,13 +411,14 @@ def main():
             img_size = [768, 256]
             crop_w = 384
         else: # we will change the aspect ratio and NOT do cropping
-            img_size = [384, 256]
+            img_size = [768, 256]
             crop_w = None
 
         # https://github.com/ClementPinard/SfmLearner-Pytorch/blob/master/inverse_warp.py
 
         # Testing Data Loader
         testing_inputs = {
+            "velodyne_depth": velodyne_depth,
             "dataset_path": dataset_path,
             "t_win_r": t_win_r,
             "img_size": img_size,
@@ -436,6 +441,7 @@ def main():
 
         # Training Data Loader
         training_inputs = {
+            "velodyne_depth": velodyne_depth,
             "dataset_path": dataset_path,
             "t_win_r": t_win_r,
             "img_size": img_size,
@@ -499,7 +505,7 @@ def main():
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
-            results = testing(model_KVnet, btest, d_candi, ngpu)
+            results = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu)
             rmses.append(results["rmse"][0])
             sils.append(results["scale invariant log"][0])
         print("RMSES")
@@ -511,7 +517,7 @@ def main():
     # Test
     if test:
         model_KVnet.eval()
-        results = testing(model_KVnet, btest, d_candi, ngpu)
+        results = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, visualizer)
         print(results)
         sys.exit()
 
@@ -654,6 +660,7 @@ def generate_model_input(local_info_valid):
 
     model_input = {
         "intrinsics": intrinsics,
+        "intrinsics_up": intrinsics_up,
         "unit_ray": unit_ray,
         "src_cam_poses": src_cam_poses,
         "rgb": rgb,
@@ -669,14 +676,23 @@ def generate_model_input(local_info_valid):
 
     return model_input, gt_input
 
-def testing(model, btest, d_candi, ngpu):
+def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer):
     import deval.pyevaluatedepth_lib as dlib
     epsilon = sys.float_info.epsilon
     all_errors = []
+    start = time.time()
+
+    # Cloud for distance
+    dcloud = []
+    for m in range(0, 20):
+        dcloud.append([0, 0, m, 255, 255, 255, 0, 0, 0])
+    dcloud = np.array(dcloud).astype(np.float32)
 
     for items in btest.get_mp():
         if exit:
             print("Exiting")
+            if visualizer is not None: visualizer.kill_received = True
+            btest.stop()
             sys.exit()
 
         # Get data
@@ -690,12 +706,17 @@ def testing(model, btest, d_candi, ngpu):
             local_info_valid = batch_loader.get_valid_items(local_info)
             local_info_valid["d_candi"] = d_candi
 
+            # viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+            # print("---")
+            # continue
+
             # Create input
             model_input, gt_input = generate_model_input(local_info_valid)
 
             # Stuff
-            #BV_cur, BV_cur_refined = model(model_input)
+            start = time.time()
             BV_cur_all, BV_cur_refined_all = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
+            #print("Forward: " + str(time.time() - start))
 
             # Truth
             depthmap_truth_all = gt_input["dmap_imgsizes"] # [1,256,384]
@@ -704,15 +725,19 @@ def testing(model, btest, d_candi, ngpu):
             depth_mask_all = gt_input["masks"][:,:,:,:].float().cuda()
 
             # Batch
+            start = time.time()
             bsize = BV_cur_refined_all.shape[0]
             for b in range(bsize):
+                BV_cur = BV_cur_all[b,:,:,:].unsqueeze(0)
                 BV_cur_refined = BV_cur_refined_all[b,:,:,:].unsqueeze(0)
                 depthmap_truth = depthmap_truth_all[b,:,:].unsqueeze(0)
                 depth_mask = depth_mask_all[b,:,:,:]
 
                 # Predicted
+                dpv_low_predicted = BV_cur[0, :, :, :].unsqueeze(0).detach()
                 dpv_predicted = BV_cur_refined[0, :, :, :].unsqueeze(0).detach()
                 depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)  # [1,256,384]
+                depthmap_low_predicted = util.dpv_to_depthmap(dpv_low_predicted, d_candi, BV_log=True)  # [1,256,384]
 
                 # Generate Numpy
                 depthmap_predicted_np = (depthmap_predicted * depth_mask).squeeze(0).cpu().numpy()
@@ -721,6 +746,48 @@ def testing(model, btest, d_candi, ngpu):
                 # Error
                 errors = dlib.depthError(depthmap_predicted_np + epsilon, depthmap_truth_np + epsilon)
                 all_errors.append(errors)
+
+                # Viz
+                if visualizer is not None and b == 0:
+                    intr_up = model_input["intrinsics_up"][b, :, :]
+                    intr = model_input["intrinsics"][b, :, :]
+                    depthmap_predicted_np = (depthmap_predicted * 1).cpu()
+                    depthmap_low_predicted_np = (depthmap_low_predicted * 1).cpu()
+                    depthmap_predicted_np[:,0:128,:] = 0
+
+                    # Visualize side Cloud
+                    #subslice = util.dpv_to_xyz(torch.exp(dpv_low_predicted), d_candi, intr, 3, 1)  # torch.Size([24576, 4])
+                    subslice = util.dpv_to_xyz(torch.exp(dpv_predicted), d_candi, intr_up, 10, 4) # torch.Size([24576, 4])
+                    slicecloud = np.zeros((subslice.shape[0],9)).astype(np.float32)
+                    slicecloud[:,0:3] = subslice[:,0:3]
+                    subslice[:,3] = (subslice[:,3] - torch.min(subslice[:,3]))/(torch.max(subslice[:,3]) - torch.min(subslice[:,3]))
+                    slicecloud[:,3] = subslice[:,3]*255
+                    slicecloud[:, 4] = 0
+                    slicecloud[:, 5] = 50
+
+                    # Get Image
+                    img = model_input["rgb"][b, -1, :, :, :]  # [1,3,256,384]
+                    img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+                    img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+                    img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+                    img_low = F.avg_pool2d(img,4)
+                    img_color = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+                    depthmap_truth_np = (depthmap_truth * depth_mask).cpu()
+
+                    # Cloud
+                    cloud_low_orig = tocloud(depthmap_low_predicted_np, img_low, intr, None)
+                    cloud_orig = tocloud(depthmap_predicted_np, img, intr_up, None)
+                    cloud_truth = tocloud(depthmap_truth_np, img, intr_up, None)
+                    cv2.imshow("win", img_color)
+                    print(cloud_orig.shape)
+                    print(slicecloud.shape)
+                    visualizer.addCloud(cloud_truth,2)
+                    #visualizer.addCloud(cloud_orig,2)
+                    #visualizer.addCloud(slicecloud,2)
+                    visualizer.addCloud(dcloud, 4)
+                    visualizer.swapBuffer()
+                    key = cv2.waitKey(0)
+                    print("--")
 
                 # # Cost
                 # #error = torch.sum(((depthmap_predicted - depthmap_truth)*depth_mask).pow(2))
@@ -744,6 +811,7 @@ def testing(model, btest, d_candi, ngpu):
                 # if key == 27:
                 #     sys.exit()
                 # break
+            #print("Process: " + str(time.time() - start))
 
         else:
             pass
@@ -850,6 +918,7 @@ class BatchSchedulerMP:
         qmax = inputs["qmax"]
         n_epoch = inputs["n_epoch"]
         mode = inputs["mode"]
+        velodyne_depth = inputs["velodyne_depth"]
         if mode == "train":
             split_txt = './kitti_split/training.txt'
         elif mode == "val":
@@ -867,7 +936,7 @@ class BatchSchedulerMP:
         dataset = dataset_init(True, img_paths, dmap_paths, poses,
                                intrin_path=intrin_path, img_size=img_size, digitize=True,
                                d_candi=d_candi, d_candi_up=d_candi_up, resize_dmap=.25,
-                               crop_w=crop_w)
+                               crop_w=crop_w, velodyne_depth=velodyne_depth)
         BatchScheduler = batch_loader.Batch_Loader(
             batch_size=batch_size, fun_get_paths=fun_get_paths,
             dataset_traj=dataset, nTraj=len(traj_Indx), dataset_name=dataset_name, t_win_r=t_win_r,

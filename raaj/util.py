@@ -69,11 +69,17 @@ def dpv_to_depthmap(dpv, d_candi, BV_log=False):
 
     return depth_regress
 
+xfield_d = dict()
+yfield_d = dict()
 def depth_to_pts(depthf, intr):
+    global xfield_d
+    global yfield_d
+
     if depthf.shape[0] != 1:
         raise Exception('Unable to handle this case')
 
     depth = depthf[0,:,:]
+    sstring = str(depth.shape)
 
     # Extract Params
     fx = intr[0,0] # Hack to make it look better?
@@ -82,12 +88,18 @@ def depth_to_pts(depthf, intr):
     cy = intr[1,2]
 
     # Create constant for X field and Y field (We should do this outside once)
-    xfield = torch.zeros(depth.shape)
-    yfield = torch.zeros(depth.shape)
-    for v in range(0, depth.shape[0]):
-        for u in range(0, depth.shape[1]):
-            xfield[v,u] = (float(u)-cx)/fx
-            yfield[v,u] = (float(v)-cy)/fy
+    if sstring not in xfield_d.keys() or sstring not in yfield_d.keys():
+        xfield_temp = torch.zeros(depth.shape)
+        yfield_temp = torch.zeros(depth.shape)
+        for v in range(0, depth.shape[0]):
+            for u in range(0, depth.shape[1]):
+                xfield_temp[v,u] = (float(u)-cx)/fx
+                yfield_temp[v,u] = (float(v)-cy)/fy
+        xfield_d[sstring] = xfield_temp
+        yfield_d[sstring] = yfield_temp
+
+    xfield = xfield_d[sstring]
+    yfield = yfield_d[sstring]
 
     # Multiply
     X = torch.mul(xfield, depth)
@@ -96,6 +108,73 @@ def depth_to_pts(depthf, intr):
     ptcloud = torch.cat([X.unsqueeze(0),Y.unsqueeze(0),Z.unsqueeze(0)], 0)
 
     return ptcloud
+
+xyzivolume_d = dict()
+xfields_d = dict()
+yfields_d = dict()
+def dpv_to_xyz(dpv, d_candi, intr, offset=0, ds=1):
+    global xyzivolume_d
+    global xfields_d
+    global yfields_d
+
+    if dpv.shape[0] != 1:
+        raise Exception('Unable to handle this case')
+
+    sstring = str(dpv.shape)
+
+    # Extract Params
+    fx = intr[0,0] # Hack to make it look better?
+    cx = intr[0,2]
+    fy = intr[1,1]
+    cy = intr[1,2]
+
+    # Create constant for X field and Y field (We should do this outside once)
+    if sstring not in xfields_d.keys() or sstring not in yfields_d.keys():
+        xfield_temp = torch.zeros((dpv.shape[2], dpv.shape[3]))
+        yfield_temp = torch.zeros((dpv.shape[2], dpv.shape[3]))
+        for v in range(0, dpv.shape[2]):
+            for u in range(0, dpv.shape[3]):
+                xfield_temp[v,u] = (float(u)-cx)/fx
+                yfield_temp[v,u] = (float(v)-cy)/fy
+        xfields_d[sstring] = xfield_temp
+        yfields_d[sstring] = yfield_temp
+    xfields = xfields_d[sstring]
+    yfields = yfields_d[sstring]
+
+    if sstring not in xyzivolume_d.keys():
+        xyzivolume_temp = torch.zeros((dpv.shape[1], dpv.shape[2], dpv.shape[3], 4))
+        for idx_d, d in enumerate(d_candi):
+            Z = torch.ones((dpv.shape[2], dpv.shape[3]))*d
+            X = torch.mul(xfields, Z)
+            Y = torch.mul(yfields, Z)
+            xyzivolume_temp[idx_d, :, :, 0] = X
+            xyzivolume_temp[idx_d, :, :, 1] = Y
+            xyzivolume_temp[idx_d, :, :, 2] = Z
+            xyzivolume_temp[idx_d, :, :, 3] = 0
+        xyzivolume_d[sstring] = xyzivolume_temp
+    xyzivolume = xyzivolume_d[sstring]
+
+    for idx_d, d in enumerate(d_candi):
+        xyzivolume[idx_d, :, :, 3] = dpv[0, idx_d, :, :]
+
+    # Subslice
+    ranges = range(xyzivolume.shape[1]/2, xyzivolume.shape[1]/2 + offset)
+    subslice = xyzivolume[:,ranges, :,:] # I need to keep increaseing this value?
+    subslice = subslice.reshape((subslice.shape[0]*subslice.shape[1]*subslice.shape[2], 4))
+    return subslice # torch.Size([24576, 4])
+
+    # # [64,256,384,4]
+    # to_append = []
+    # for i in range(0,4):
+    #     DAT = xyzivolume[:,:,:,i]
+    #     DAT = F.avg_pool2d(DAT, ds)
+    #     DAT = DAT.unsqueeze(-1)
+    #     to_append.append(DAT)
+    # xyzivolume_down = torch.cat(to_append, -1)
+    # xyzi = xyzivolume_down.reshape((xyzivolume_down.shape[0]*xyzivolume_down.shape[1]*xyzivolume_down.shape[2],4))
+    # return xyzi
+
+    #print(xyzi.shape)
 
 def get_twin_rel_pose( traj_extMs, ref_indx, t_win_r, dat_indx_step , 
         use_gt_R=False, 

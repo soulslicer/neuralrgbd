@@ -310,7 +310,7 @@ class KITTI_dataset(data.Dataset):
 
     def __init__(self, training, p_data, dmap_seq_paths, poses, intrin_path,
                  img_size = [1248,380], digitize = False, d_candi = None, d_candi_up = None, resize_dmap = None, if_process = True,
-                 crop_w = 384):
+                 crop_w = 384, velodyne_depth = True):
 
         '''
         inputs:
@@ -341,6 +341,7 @@ class KITTI_dataset(data.Dataset):
             assert (img_size[0] - crop_w )%2 ==0 and crop_w%4 ==0
             assert resize_dmap is not None
 
+        self.velodyne_depth = velodyne_depth
         self.p_data = p_data
         self.dmap_seq_paths = dmap_seq_paths
         self.poses = poses
@@ -418,6 +419,45 @@ class KITTI_dataset(data.Dataset):
         proc_normalize = get_transform()
         proc_totensor = to_tensor()
 
+        # IMU to camera #
+        intr_raw = None
+        raw_img_size = None #[1226, 370]
+        if mode == "left":
+            M_imu2cam = self.p_data.calib.T_cam2_imu
+            intr_raw = self.p_data.calib.K_cam2
+            raw_img_size = self.p_data.get_cam2(0).size
+        elif mode == "right":
+            M_imu2cam = self.p_data.calib.T_cam3_imu
+            intr_raw = self.p_data.calib.K_cam3
+            raw_img_size = self.p_data.get_cam3(0).size
+
+        # Velodyne or Depth Load
+        if self.velodyne_depth:
+            velodata = self.p_data.get_velo(indx) # [N x 4] [We could clean up the low intensity ones here!]
+            M_imu2velo = self.p_data.calib.T_velo_imu
+            M_velo2imu = np.linalg.inv(M_imu2velo)
+            M_velo2cam = np.matmul(M_imu2cam, M_velo2imu) # is this correct?
+            intr_raw_append = np.append(intr_raw, np.array([[0, 0, 0]]).T, axis=1)
+            velodata[:,3] = 1.
+            velodata_cam = np.matmul(M_velo2cam, velodata.T).T
+            velodata_cam = velodata_cam[velodata_cam[:, 2] >= 0.1]
+            velodata_cam_proj = np.matmul(intr_raw_append, velodata_cam.T).T #[N*3]
+            velodata_cam_proj[:,0] /= velodata_cam_proj[:,2]
+            velodata_cam_proj[:,1] /= velodata_cam_proj[:,2]
+            velodata_cam_proj[:, 2] = velodata_cam[:,2]
+            velodata_cam_proj = velodata_cam_proj[np.logical_and(velodata_cam_proj[:, 0] >= 0, velodata_cam_proj[:, 0] < raw_img_size[0])]
+            velodata_cam_proj = velodata_cam_proj[np.logical_and(velodata_cam_proj[:, 1] >= 0, velodata_cam_proj[:, 1] < raw_img_size[1])]
+            dmap_raw = np.zeros((raw_img_size[1], raw_img_size[0])).astype(np.float32)
+            up = velodata_cam_proj[:, 0].astype('int')
+            vp = velodata_cam_proj[:, 1].astype('int')
+            Z = velodata_cam_proj[:, 2]
+            dmap_raw[vp, up] = Z * 1
+            dmap_raw = PIL.Image.fromarray(dmap_raw)
+            scale_factor = 1.
+        else:
+            dmap_raw = _read_dimg(dmap_path, no_process=True)[0] #[1226, 370]
+            scale_factor = 256.
+
         # read rgb image #
         if mode == "left":
             img = _read_left_img(self.p_data, indx, no_process=True)[0]
@@ -433,7 +473,6 @@ class KITTI_dataset(data.Dataset):
         img_gray = self.to_gray(img)
 
         # read GT depth map (if available) #
-        dmap_raw = _read_dimg(dmap_path, no_process=True)[0]
         if dmap_raw is not -1:
             dmap_mask_imgsize = np.array(dmap_raw, dtype=int).astype(np.float32) < 0.01
             dmap_mask_imgsize = PIL.Image.fromarray(
@@ -441,8 +480,8 @@ class KITTI_dataset(data.Dataset):
                                                                   self.img_size[1]], PIL.Image.NEAREST)
             if self.resize_dmap is not None:
                 dmap_imgsize = dmap_raw.resize([self.img_size[0], self.img_size[1]], PIL.Image.NEAREST)
-                dmap_imgsize = proc_totensor(dmap_imgsize)[0, :, :].float() / 256.
-                dmap_rawsize = proc_totensor(dmap_raw)[0, :, :].float() / 256.
+                dmap_imgsize = proc_totensor(dmap_imgsize)[0, :, :].float() / scale_factor
+                dmap_rawsize = proc_totensor(dmap_raw)[0, :, :].float() / scale_factor
                 # resize the depth map #
                 dmap_size = [int(float(self.img_size[0]) * self.resize_dmap),
                              int(float(self.img_size[1]) * self.resize_dmap)]
@@ -451,48 +490,30 @@ class KITTI_dataset(data.Dataset):
                 dmap_raw = dmap_raw.resize(dmap_size, PIL.Image.NEAREST)
                 dmap_mask = dmap_mask_imgsize.resize(dmap_size, PIL.Image.NEAREST)
             dmap_raw = proc_totensor(dmap_raw)[0, :, :]  # single-channel for depth map
-            dmap_raw = dmap_raw.float() / 256.  # scale to meter
+            dmap_raw = dmap_raw.float() / scale_factor  # scale to meter
             dmap_raw_bilinear_dw = proc_totensor(dmap_raw_bilinear_dw)[0, :, :]
-            dmap_raw_bilinear_dw = dmap_raw_bilinear_dw.float() / 256.
+            dmap_raw_bilinear_dw = dmap_raw_bilinear_dw.float() / scale_factor
             if self.resize_dmap is None:
                 dmap_rawsize = dmap_raw
-
-            # dmap_mask = 1 - (proc_totensor(dmap_mask) > 0 )
-            # dmap_mask_imgsize = 1-( proc_totensor( dmap_mask_imgsize ) >0)
             dmap_mask = ~(proc_totensor(dmap_mask) > 0)
             dmap_mask_imgsize = ~(proc_totensor(dmap_mask_imgsize) > 0)
-
             dmap_raw = dmap_raw * dmap_mask.squeeze().type_as(dmap_raw)
             dmap_raw_bilinear_dw = dmap_raw_bilinear_dw * dmap_mask.squeeze().type_as(dmap_raw)
             dmap_imgsize = dmap_imgsize * dmap_mask_imgsize.squeeze().type_as(dmap_imgsize)
             if self.digitize:
                 # digitize the depth map #
                 dmap = dMap_to_indxMap(dmap_raw, self.d_candi)
-                dmap[dmap >= self.label_max] = self.label_max
+                dmap[dmap >= self.label_max] = self.label_max # We could set this to min too so it get ignored in clamp
                 dmap[dmap <= self.label_min] = self.label_min
                 dmap = torch.from_numpy(dmap)
-
                 dmap_imgsize_digit = dMap_to_indxMap(dmap_imgsize, self.d_candi)
                 dmap_imgsize_digit[dmap_imgsize_digit >= self.label_max] = self.label_max
                 dmap_imgsize_digit[dmap_imgsize_digit <= self.label_min] = self.label_min
                 dmap_imgsize_digit = torch.from_numpy(dmap_imgsize_digit)
-
-                # data = dmap_imgsize_digit.numpy()
-                # for r in range(0, data.shape[0]):
-                #     for c in range(0, data.shape[1]):
-                #         if data[r,c] == 0: continue
-                #         print((r,c,data[r,c]))
-                # import cv2
-                # print(dmap_imgsize_digit.numpy())
-                # cv2.imshow("win", dmap_imgsize_digit.numpy()*255)
-                # cv2.waitKey(0)
-                # stop
-
                 dmap_up4_imgsize_digit = dMap_to_indxMap(dmap_imgsize, self.dup4_candi)
                 dmap_up4_imgsize_digit[dmap_up4_imgsize_digit >= self.dup4_label_max] = self.dup4_label_max
                 dmap_up4_imgsize_digit[dmap_up4_imgsize_digit <= self.dup4_label_min] = self.dup4_label_min
                 dmap_up4_imgsize_digit = torch.from_numpy(dmap_up4_imgsize_digit)
-
             else:
                 dmap = dmap_raw
                 dmap_imgsize_digit = dmap_imgsize
@@ -538,11 +559,6 @@ class KITTI_dataset(data.Dataset):
                                     :, :, side_crop: (dmap_mask_imgsize.shape[-1] - side_crop)]
 
         # read extrinsics #
-        # IMU to camera #
-        if mode == "left":
-            M_imu2cam = self.p_data.calib.T_cam2_imu
-        elif mode == "right":
-            M_imu2cam = self.p_data.calib.T_cam3_imu
         extM = np.matmul(M_imu2cam, np.linalg.inv(self.poses[indx]))
         # image path #
         scene_path = self.p_data.calib_path
