@@ -338,6 +338,8 @@ def main():
     parser.add_argument('--pre_trained_folder', type=str, default='', help='The pre-trained folder to evaluate')
     parser.add_argument('--velodyne_depth', action='store_true', default=False,
                         help='velodyne_depth (False)')
+    parser.add_argument('--lc', action='store_true', default=False,
+                        help='velodyne_depth (False)')
 
     #hack_num = 326
     hack_num = 0
@@ -347,6 +349,7 @@ def main():
 
     # Arguments Parsing
     args = parser.parse_args()
+    lc = args.lc
     test_interval = args.test_interval
     velodyne_depth = args.velodyne_depth
     pre_trained_folder = args.pre_trained_folder
@@ -392,6 +395,14 @@ def main():
     logfile = os.path.join(log_dir,'log_'+str(time.time())+'.txt')
     stdout = Logger(logfile)
     sys.stdout = stdout
+
+    if lc:
+        # CO Stuff
+        sys.path.append("/home/raaj/cmu/lc_ws/src/light_curtain_ros/carla_lc/src/carla_lc/")
+        from opt_curtain import CurtainOpt
+        lightcurtain = CurtainOpt(False, True)
+    else:
+        lightcurtain = None
 
     if viz:
         from viewer.viewer import Visualizer
@@ -500,24 +511,28 @@ def main():
                 all_files.append(os.path.join(subdir, file))
         all_files = natural_sort(all_files)
         model_KVnet.eval()
-        rmses = []
-        sils = []
+        rmses = []; rmses_low = [];
+        sils = []; sils_low = [];
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
-            results = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu)
-            rmses.append(results["rmse"][0])
-            sils.append(results["scale invariant log"][0])
+            results, results_low = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu)
+            rmses.append(results["rmse"][0]); rmses_low.append(results_low["rmse"][0]);
+            sils.append(results["scale invariant log"][0]); sils_low.append(results_low["scale invariant log"][0])
         print("RMSES")
         print(rmses)
         print("SILS")
         print(sils)
+        print("RMSES_low")
+        print(rmses_low)
+        print("SILS_low")
+        print(sils_low)
         sys.exit()
 
     # Test
     if test:
         model_KVnet.eval()
-        results = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, visualizer)
+        results = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain)
         print(results)
         sys.exit()
 
@@ -611,16 +626,20 @@ def generate_model_input(local_info_valid):
     dmap_imgsize_digit_arr = []
     dmap_digit_arr = []
     dmap_imgsize_arr = []
+    dmap_arr = []
     for i in range(0, len(local_info_valid["src_dats"])):
         dmap_imgsize_digit = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_imgsize_digit"]
         dmap_imgsize_digit_arr.append(dmap_imgsize_digit)
         dmap_digit = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap"]
         dmap_imgsize = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_imgsize"]
+        dmap = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_raw"]
         dmap_digit_arr.append(dmap_digit)
         dmap_imgsize_arr.append(dmap_imgsize)
-    dmap_imgsize_digits = torch.cat(dmap_imgsize_digit_arr).cuda() # [B,256,384] uint64
-    dmap_digits = torch.cat(dmap_digit_arr).cuda() # [B,64,96] uint64
-    dmap_imgsizes = torch.cat(dmap_imgsize_arr).cuda()
+        dmap_arr.append(dmap)
+    dmap_imgsize_digits = torch.cat(dmap_imgsize_digit_arr) # [B,256,384] uint64
+    dmap_digits = torch.cat(dmap_digit_arr) # [B,64,96] uint64
+    dmap_imgsizes = torch.cat(dmap_imgsize_arr)
+    dmap = torch.cat(dmap_arr)
 
     intrinsics_arr = []
     intrinsics_up_arr = []
@@ -641,6 +660,7 @@ def generate_model_input(local_info_valid):
         src_cam_poses_arr.append(pose[:,0:midval+1,:,:]) # currently [1x3x4x4]
     src_cam_poses = torch.cat(src_cam_poses_arr)
 
+    mask_imgsize_arr = []
     mask_arr = []
     rgb_arr = []
     debug_path = []
@@ -654,8 +674,10 @@ def generate_model_input(local_info_valid):
             if j == midval: break
         rgb_arr.append(torch.cat(rgb_set).unsqueeze(0))
         debug_path.append(debug_path_int)
-        mask_arr.append(local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_mask_imgsize"])
+        mask_imgsize_arr.append(local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_mask_imgsize"])
+        mask_arr.append(local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_mask"])
     rgb = torch.cat(rgb_arr)
+    masks_imgsize = torch.cat(mask_imgsize_arr)
     masks = torch.cat(mask_arr)
 
     model_input = {
@@ -668,18 +690,21 @@ def generate_model_input(local_info_valid):
     }
 
     gt_input = {
+        "masks_imgsizes": masks_imgsize,
         "masks": masks,
         "dmap_imgsize_digits": dmap_imgsize_digits,
         "dmap_digits": dmap_digits,
-        "dmap_imgsizes": dmap_imgsizes
+        "dmap_imgsizes": dmap_imgsizes,
+        "dmap": dmap
     }
 
     return model_input, gt_input
 
-def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer):
+def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
     import deval.pyevaluatedepth_lib as dlib
     epsilon = sys.float_info.epsilon
     all_errors = []
+    all_errors_low = []
     start = time.time()
 
     # Cloud for distance
@@ -713,6 +738,21 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer):
             # Create input
             model_input, gt_input = generate_model_input(local_info_valid)
 
+            intrinsics_up = model_input["intrinsics_up"][0,:,:].numpy()
+            width = model_input["rgb"].shape[4]
+            height = model_input["rgb"].shape[3]
+
+            # Create LC output
+            #def get_basic(self, baseline=0.2, laser_fov=80, intrinsics=[400., 0., 256, 0., 400., 256., 0., 0., 1.],
+            #              width=512, height=512, distortion=[0.000000, 0.000000, 0.000000, 0.000000, 0.000000]):
+            if lightcurtain is not None:
+                if not lightcurtain.pset:
+                    params, sensor_setup = lightcurtain.get_basic(baseline=0.2, laser_fov=80,
+                                                                  intrinsics=model_input["intrinsics_up"][0,:,:].numpy(),
+                                                                  width=model_input["rgb"].shape[4],
+                                                                  height=model_input["rgb"].shape[3])
+                    lightcurtain.load_data(params, sensor_setup)
+
             # Stuff
             start = time.time()
             BV_cur_all, BV_cur_refined_all = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
@@ -720,9 +760,11 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer):
 
             # Truth
             depthmap_truth_all = gt_input["dmap_imgsizes"] # [1,256,384]
+            depthmap_truth_low_all = gt_input["dmap"] # [1,256,384]
 
             # Masks
-            depth_mask_all = gt_input["masks"][:,:,:,:].float().cuda()
+            depth_mask_all = gt_input["masks_imgsizes"][:,:,:,:].float()
+            depth_mask_low_all = gt_input["masks"][:,:,:,:].float()
 
             # Batch
             start = time.time()
@@ -731,7 +773,9 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer):
                 BV_cur = BV_cur_all[b,:,:,:].unsqueeze(0)
                 BV_cur_refined = BV_cur_refined_all[b,:,:,:].unsqueeze(0)
                 depthmap_truth = depthmap_truth_all[b,:,:].unsqueeze(0)
+                depthmap_truth_low = depthmap_truth_low_all[b,:,:].unsqueeze(0)
                 depth_mask = depth_mask_all[b,:,:,:]
+                depth_mask_low = depth_mask_low_all[b,:,:,:]
 
                 # Predicted
                 dpv_low_predicted = BV_cur[0, :, :, :].unsqueeze(0).detach()
@@ -740,12 +784,16 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer):
                 depthmap_low_predicted = util.dpv_to_depthmap(dpv_low_predicted, d_candi, BV_log=True)  # [1,256,384]
 
                 # Generate Numpy
-                depthmap_predicted_np = (depthmap_predicted * depth_mask).squeeze(0).cpu().numpy()
+                depthmap_predicted_np = (depthmap_predicted.cpu() * depth_mask).squeeze(0).cpu().numpy()
+                depthmap_predicted_low_np = (depthmap_low_predicted.cpu() * depth_mask_low).squeeze(0).cpu().numpy()
                 depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
+                depthmap_truth_low_np = (depthmap_truth_low.cpu() * depth_mask_low).squeeze(0).cpu().numpy()
 
                 # Error
                 errors = dlib.depthError(depthmap_predicted_np + epsilon, depthmap_truth_np + epsilon)
+                errors_low = dlib.depthError(depthmap_predicted_low_np + epsilon, depthmap_truth_low_np + epsilon)
                 all_errors.append(errors)
+                all_errors_low.append(errors_low)
 
                 # Viz
                 if visualizer is not None and b == 0:
@@ -773,6 +821,15 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer):
                     img_low = F.avg_pool2d(img,4)
                     img_color = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
                     depthmap_truth_np = (depthmap_truth * depth_mask).cpu()
+
+                    # Light Curtain
+                    if lightcurtain is not None:
+                        arc = lightcurtain.get_arc(22)
+                        lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_np[0,:,:].numpy()])
+                        lccloud = np.append(lccloud, np.zeros((lccloud.shape[0], 5)), axis=1)
+                        lccloud[:,4:6] = 50
+                        lccloud = hack(lccloud)
+                        visualizer.addCloud(lccloud, 2)
 
                     # Cloud
                     cloud_low_orig = tocloud(depthmap_low_predicted_np, img_low, intr, None)
@@ -817,7 +874,8 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer):
             pass
 
     results = dlib.evaluateErrors(all_errors)
-    return results
+    results_low = dlib.evaluateErrors(all_errors_low)
+    return results, results_low
 
 def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     start = time.time()
