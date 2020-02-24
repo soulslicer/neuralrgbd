@@ -893,8 +893,8 @@ def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     loss = 0
     for ibatch in range(BV_cur.shape[0]):
         #loss = loss + torch.sum(BV_cur[ibatch,:,:,:])
-        loss = loss + F.nll_loss(BV_cur[ibatch,:,:,:].unsqueeze(0), gt_input["dmap_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
-        loss = loss + F.nll_loss(BV_cur_refined[ibatch,:,:,:].unsqueeze(0), gt_input["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
+        loss = loss + F.nll_loss(BV_cur[ibatch,:,:,:].unsqueeze(0), gt_input["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
+        loss = loss + F.nll_loss(BV_cur_refined[ibatch,:,:,:].unsqueeze(0), gt_input["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
 
     # What if we convert the DPV to a depth map, and regress that too?
 
