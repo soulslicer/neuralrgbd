@@ -463,7 +463,7 @@ def main():
             "hack_num": hack_num,
             "batch_size": batch_size,
             "n_epoch": n_epoch,
-            "qmax": 1,
+            "qmax": 2,
             "mode": "train"
         }
         if not test: b = BatchSchedulerMP(training_inputs, 0)
