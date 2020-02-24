@@ -340,6 +340,7 @@ def main():
                         help='velodyne_depth (False)')
     parser.add_argument('--lc', action='store_true', default=False,
                         help='velodyne_depth (False)')
+    parser.add_argument('--drefine', type=str, default='', help='Additional flags for dnet')
 
     #hack_num = 326
     hack_num = 0
@@ -365,6 +366,7 @@ def main():
     nDepth = args.ndepth
     qpower = args.qpower
     ngpu = args.ngpu
+    drefine = args.drefine
 
     # Linear
     #d_candi = np.linspace(args.d_min, args.d_max, nDepth)
@@ -480,7 +482,7 @@ def main():
     print('Init Network - Assume left usage')
     model_KVnet = KVNET(feature_dim = dnet_feature_dim, cam_intrinsics = None,
                         d_candi = d_candi, d_candi_up = d_candi_up, sigma_soft_max = sigma_soft_max, KVNet_feature_dim = dnet_feature_dim,
-                        d_upsample_ratio_KV_net = None)
+                        d_upsample_ratio_KV_net = None, drefine = drefine)
 
     #model_KVnet = torch.nn.DataParallel(model_KVnet,  dim=0)
     model_KVnet.cuda()

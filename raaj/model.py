@@ -32,7 +32,7 @@ class KVNET(nn.Module):
     '''
     def __init__(self, feature_dim, cam_intrinsics, d_candi, d_candi_up, sigma_soft_max,
                  KVNet_feature_dim, d_upsample_ratio_KV_net, 
-                 if_refined = True, refine_channel = 3, if_upsample_d = False
+                 if_refined = True, refine_channel = 3, if_upsample_d = False, drefine = ""
                  ):
 
         super(KVNET, self).__init__()
@@ -49,7 +49,7 @@ class KVNET(nn.Module):
         self.d_net = submodels.D_NET_BASIC(
                 self.feature_extractor, cam_intrinsics,
                 d_candi, sigma_soft_max, use_img_intensity=True,
-                BV_log = True, output_features = True)
+                BV_log = True, output_features = True, drefine = drefine)
 
         # KV Net needs to process on size of input - do we need this now?
         # We should be doing 3D Conv after feature output

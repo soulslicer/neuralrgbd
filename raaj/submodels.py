@@ -143,7 +143,7 @@ class D_NET_BASIC(nn.Module):
                  sigma_soft_max, BV_log = False, normalize = True,
                  use_img_intensity = False, force_img_dw_rate = 1, 
                  parallel_d = True, output_features = False, 
-                 refine_costV = False, feat_dist = 'L2'):
+                 refine_costV = False, feat_dist = 'L2', drefine = ""):
         '''
         INPUTS: 
 
@@ -180,13 +180,14 @@ class D_NET_BASIC(nn.Module):
         self.refine_costV = refine_costV
         self.feat_dist = feat_dist
         self.refine_costV = refine_costV
+        self.drefine = drefine
 
         if force_img_dw_rate > 1:
             self.force_img_dw_rate = force_img_dw_rate # Force to downsampling the input images
         else:
             self.force_img_dw_rate = None
 
-        if self.refine_costV:
+        if self.drefine == "m1":
             D = len(d_candi) 
             self.conv0 = m_submodule.conv2d_leakyRelu(
                     ch_in = D, ch_out = D, kernel_size=3, stride=1, pad=1, use_bias=True) 
@@ -194,6 +195,12 @@ class D_NET_BASIC(nn.Module):
                     ch_in= D, ch_out= D, kernel_size=3, stride=1, pad=1, use_bias=True) 
             self.conv0_2 = nn.Conv2d(D, D, kernel_size=3, stride=1, padding=1, bias=True) 
             self.apply(self.weight_init)
+        elif self.drefine == "m2":
+            pass
+            # D = len(d_candi)
+            # self.conv0 = nn.Sequential(convbn_3d(D, D * 2,
+            #                                      kernel_size=3, stride=2,
+            #                                      pad=1), nn.ReLU())
 
     def weight_init(self, m):
         if isinstance(m, nn.Conv2d):
@@ -270,7 +277,7 @@ class D_NET_BASIC(nn.Module):
         cost_volumes = torch.cat(cost_volumes, dim=0) # [4 128 64 96]
 
         # Refinement (3D Conv here or not)
-        if self.refine_costV:
+        if self.drefine == "m1":
             costv_out0 = self.conv0( cost_volumes )
             costv_out1 = self.conv0_1( costv_out0)
             costv_out2 = self.conv0_2( costv_out1)
