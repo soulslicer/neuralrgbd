@@ -41,7 +41,7 @@ import torch.multiprocessing
 from torch.multiprocessing import Process, Queue, Value, cpu_count
 
 def powerf(d_min, d_max, nDepth, power):
-    f = lambda x: d_min + (d_max - 1) * x
+    f = lambda x: d_min + (d_max - d_min) * x
     x = np.linspace(start=0, stop=1, num=nDepth)
     x = np.power(x, power)
     candi = [f(v) for v in x]
@@ -488,7 +488,7 @@ def main():
 
     optimizer_KV = optim.Adam(model_KVnet.parameters(), lr = LR , betas= (.9, .999 ))
 
-    model_path_KV = saved_model_path + "/" + args.pre_trained_model_path
+    model_path_KV = saved_model_path + "/../" + args.pre_trained_model_path
     if model_path_KV is not '.' and pre_trained:
         print('loading KV_net at %s'%(model_path_KV))
         lparams = util.load_pretrained_model(model_KVnet, model_path_KV, optimizer_KV)
@@ -838,8 +838,8 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
                     cv2.imshow("win", img_color)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    visualizer.addCloud(cloud_truth,2)
-                    #visualizer.addCloud(cloud_orig,2)
+                    #visualizer.addCloud(cloud_truth,2)
+                    visualizer.addCloud(cloud_orig,2)
                     #visualizer.addCloud(slicecloud,2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()
