@@ -516,7 +516,7 @@ def main():
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
-            results, results_low = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu)
+            results, results_low = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, None, None)
             rmses.append(results["rmse"][0]); rmses_low.append(results_low["rmse"][0]);
             sils.append(results["scale invariant log"][0]); sils_low.append(results_low["scale invariant log"][0])
         print("RMSES")
