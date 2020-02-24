@@ -286,9 +286,9 @@ class D_NET_BASIC(nn.Module):
 
         # Ensure log like
         if self.BV_log:
-            BV = F.log_softmax(-costv_out2, dim=1)
+            BV = F.log_softmax(costv_out2, dim=1)
         else:
-            BV = F.softmax(-costv_out2, dim=1)
+            BV = F.softmax(costv_out2, dim=1)
 
         # Return BV and primary image features (in the future return others too for flow?)
         return BV, [feat_imgs_all[:,-1,:-3, :,:], feat_imgs_layer_1[:,-1,:,:,:]]
