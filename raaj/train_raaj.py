@@ -789,6 +789,10 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
                 depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
                 depthmap_truth_low_np = (depthmap_truth_low.cpu() * depth_mask_low).squeeze(0).cpu().numpy()
 
+                # Clamp the truth max depth
+                depthmap_truth_np[depthmap_truth_np >= d_candi[-1]] = d_candi[-1]
+                depthmap_truth_low_np[depthmap_truth_low_np >= d_candi[-1]] = d_candi[-1]
+
                 # Error
                 errors = dlib.depthError(depthmap_predicted_np + epsilon, depthmap_truth_np + epsilon)
                 errors_low = dlib.depthError(depthmap_predicted_low_np + epsilon, depthmap_truth_low_np + epsilon)
@@ -820,12 +824,11 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
                     img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
                     img_low = F.avg_pool2d(img,4)
                     img_color = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-                    depthmap_truth_np = (depthmap_truth * depth_mask).cpu()
 
                     # Light Curtain
                     if lightcurtain is not None:
                         arc = lightcurtain.get_arc(22)
-                        lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_np[0,:,:].numpy()])
+                        lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_np])
                         lccloud = np.append(lccloud, np.zeros((lccloud.shape[0], 5)), axis=1)
                         lccloud[:,4:6] = 50
                         lccloud = hack(lccloud)
@@ -834,12 +837,12 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
                     # Cloud
                     cloud_low_orig = tocloud(depthmap_low_predicted_np, img_low, intr, None)
                     cloud_orig = tocloud(depthmap_predicted_np, img, intr_up, None)
-                    cloud_truth = tocloud(depthmap_truth_np, img, intr_up, None)
+                    cloud_truth = tocloud(torch.tensor(depthmap_truth_np[np.newaxis, :]), img, intr_up, None)
                     cv2.imshow("win", img_color)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    #visualizer.addCloud(cloud_truth,2)
-                    visualizer.addCloud(cloud_orig,2)
+                    visualizer.addCloud(cloud_truth,2)
+                    #visualizer.addCloud(cloud_orig,2)
                     #visualizer.addCloud(slicecloud,2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()
