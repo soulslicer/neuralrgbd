@@ -25,6 +25,7 @@ import torchvision.transforms as tfv_transform
 
 import warping.View as View
 
+import torch.nn.functional as F
 import torchvision.transforms as transforms
 import random
 __imagenet_stats = {'mean': [0.485, 0.456, 0.406],\
@@ -310,7 +311,7 @@ class KITTI_dataset(data.Dataset):
 
     def __init__(self, training, p_data, dmap_seq_paths, poses, intrin_path,
                  img_size = [1248,380], digitize = False, d_candi = None, d_candi_up = None, resize_dmap = None, if_process = True,
-                 crop_w = 384, velodyne_depth = True):
+                 crop_w = 384, velodyne_depth = True, pytorch_scaling = False):
 
         '''
         inputs:
@@ -341,6 +342,7 @@ class KITTI_dataset(data.Dataset):
             assert (img_size[0] - crop_w )%2 ==0 and crop_w%4 ==0
             assert resize_dmap is not None
 
+        self.pytorch_scaling = pytorch_scaling
         self.velodyne_depth = velodyne_depth
         self.p_data = p_data
         self.dmap_seq_paths = dmap_seq_paths
@@ -458,41 +460,73 @@ class KITTI_dataset(data.Dataset):
             dmap_raw = _read_dimg(dmap_path, no_process=True)[0] #[1226, 370]
             scale_factor = 256.
 
-        # read rgb image #
+        # Read RGB
         if mode == "left":
             img = _read_left_img(self.p_data, indx, no_process=True)[0]
         elif mode == "right":
             img = _read_right_img(self.p_data, indx, no_process=True)[0]
-        img = img.resize(self.img_size, PIL.Image.NEAREST)
+        img = img.resize(self.img_size, PIL.Image.BILINEAR)
         if self.resize_dmap is not None:
-            img_dw = img.resize(
-                [int(self.img_size[0] * self.resize_dmap), int(self.img_size[1] * self.resize_dmap)],
-                PIL.Image.NEAREST)
+            if not self.pytorch_scaling:
+                img_dw = img.resize(
+                    [int(self.img_size[0] * self.resize_dmap), int(self.img_size[1] * self.resize_dmap)],
+                    PIL.Image.BILINEAR)
+            else:
+                img_pytorch = proc_totensor(img)
+                sfactor = self.resize_dmap
+                img_pytorch_dw_bl = F.interpolate(img_pytorch.unsqueeze(0), scale_factor=sfactor, mode='bilinear').squeeze(0)
+                temp = (img_pytorch_dw_bl.numpy().transpose(1,2,0)*255).astype(np.uint8)
+                img_dw = PIL.Image.fromarray(temp)
         else:
             img_dw = None
         img_gray = self.to_gray(img)
 
         # read GT depth map (if available) #
         if dmap_raw is not -1:
-            dmap_mask_imgsize = np.array(dmap_raw, dtype=int).astype(np.float32) < 0.01
-            dmap_mask_imgsize = PIL.Image.fromarray(
-                dmap_mask_imgsize.astype(np.uint8) * 255).resize([self.img_size[0],
-                                                                  self.img_size[1]], PIL.Image.NEAREST)
-            if self.resize_dmap is not None:
-                dmap_imgsize = dmap_raw.resize([self.img_size[0], self.img_size[1]], PIL.Image.NEAREST)
-                dmap_imgsize = proc_totensor(dmap_imgsize)[0, :, :].float() / scale_factor
-                dmap_rawsize = proc_totensor(dmap_raw)[0, :, :].float() / scale_factor
-                # resize the depth map #
-                dmap_size = [int(float(self.img_size[0]) * self.resize_dmap),
-                             int(float(self.img_size[1]) * self.resize_dmap)]
 
-                dmap_raw_bilinear_dw = dmap_raw.resize(dmap_size, PIL.Image.BILINEAR)
-                dmap_raw = dmap_raw.resize(dmap_size, PIL.Image.NEAREST)
-                dmap_mask = dmap_mask_imgsize.resize(dmap_size, PIL.Image.NEAREST)
-            dmap_raw = proc_totensor(dmap_raw)[0, :, :]  # single-channel for depth map
-            dmap_raw = dmap_raw.float() / scale_factor  # scale to meter
-            dmap_raw_bilinear_dw = proc_totensor(dmap_raw_bilinear_dw)[0, :, :]
-            dmap_raw_bilinear_dw = dmap_raw_bilinear_dw.float() / scale_factor
+            if self.resize_dmap is not None:
+
+                # Convert Image to [256, 768]
+                dmap_imgsize = dmap_raw.resize([self.img_size[0], self.img_size[1]], PIL.Image.NEAREST)
+
+                if not self.pytorch_scaling:
+
+                    # Resize Downsample (Added)
+                    dmap_size = [int(float(dmap_imgsize.width) * self.resize_dmap),
+                                 int(float(dmap_imgsize.height) * self.resize_dmap)]
+                    dmap_raw_bilinear_dw = dmap_imgsize.resize(dmap_size, PIL.Image.BILINEAR)
+                    dmap_raw = dmap_imgsize.resize(dmap_size, PIL.Image.NEAREST)
+                    #dmap_mask = dmap_mask_imgsize.resize(dmap_size, PIL.Image.NEAREST)
+
+                    # Convert to Tensor
+                    dmap_imgsize = proc_totensor(dmap_imgsize)[0, :, :].float() / scale_factor
+                    dmap_rawsize = proc_totensor(dmap_raw)[0, :, :].float() / scale_factor
+                else:
+
+                    # Convert to Tensor
+                    dmap_imgsize = proc_totensor(dmap_imgsize)[0, :, :].float() / scale_factor
+
+                    # Resize using Pytorch
+                    dmap_size = [int(float(dmap_imgsize.shape[0]) * self.resize_dmap),
+                                 int(float(dmap_imgsize.shape[1]) * self.resize_dmap)]
+                    dmap_raw_bilinear_dw = F.interpolate(dmap_imgsize.unsqueeze(0).unsqueeze(0), size=dmap_size, mode='bilinear').squeeze(0).squeeze(0)
+                    dmap_raw = F.interpolate(dmap_imgsize.unsqueeze(0).unsqueeze(0), size=dmap_size, mode='nearest').squeeze(0).squeeze(0)
+                    dmap_rawsize = dmap_raw
+
+            # Build Mask (Added)
+            dmap_mask_imgsize = np.array(dmap_imgsize, dtype=int).astype(np.float32) < 0.01
+            dmap_mask = np.array(dmap_rawsize, dtype=int).astype(np.float32) < 0.01
+
+            # Convert to Tensor
+            if not self.pytorch_scaling:
+                dmap_raw = proc_totensor(dmap_raw)[0, :, :]  # single-channel for depth map
+                dmap_raw = dmap_raw.float() / scale_factor  # scale to meter
+                dmap_raw_bilinear_dw = proc_totensor(dmap_raw_bilinear_dw)[0, :, :]
+                dmap_raw_bilinear_dw = dmap_raw_bilinear_dw.float() / scale_factor
+            else:
+                pass
+
+            # Apply Mask
             if self.resize_dmap is None:
                 dmap_rawsize = dmap_raw
             dmap_mask = ~(proc_totensor(dmap_mask) > 0)
@@ -500,6 +534,34 @@ class KITTI_dataset(data.Dataset):
             dmap_raw = dmap_raw * dmap_mask.squeeze().type_as(dmap_raw)
             dmap_raw_bilinear_dw = dmap_raw_bilinear_dw * dmap_mask.squeeze().type_as(dmap_raw)
             dmap_imgsize = dmap_imgsize * dmap_mask_imgsize.squeeze().type_as(dmap_imgsize)
+
+            # # Test
+            # # Do a test
+            # for r in range(0, dmap_imgsize.shape[0], 4):
+            #     for c in range(0, dmap_imgsize.shape[1], 4):
+            #         if self.pytorch_scaling:
+            #             larged = dmap_imgsize[r, c]
+            #         else:
+            #             larged = dmap_imgsize[r+4-2, c+4-2]
+            #         smalld = dmap_rawsize[r / 4, c / 4]
+            #         if self.pytorch_scaling:
+            #             largemask = dmap_mask_imgsize[0, r, c]
+            #         else:
+            #             largemask = dmap_mask_imgsize[0, r+4-2, c+4-2]
+            #         smallmask = dmap_mask[0, r / 4, c / 4]
+            #
+            #         err = larged - smalld
+            #         if (err > 0.001):
+            #             print(r, c)
+            #         if(largemask != smallmask):
+            #             print(r,c)
+            #         if smalld == 0 and smallmask == True:
+            #             print("errorsmall")
+            #         if larged == 0 and largemask == True:
+            #             print("errorlarge")
+            # stop
+
+            # Digitize
             if self.digitize:
                 # digitize the depth map #
                 dmap = dMap_to_indxMap(dmap_raw, self.d_candi)
@@ -519,6 +581,7 @@ class KITTI_dataset(data.Dataset):
                 dmap_imgsize_digit = dmap_imgsize
                 dmap_up4_imgsize_digit = dmap_imgsize
 
+        # RGB to Pytorch
         if self.if_preprocess:
             img = proc_normalize(img)
             if self.resize_dmap is not None:
@@ -529,7 +592,7 @@ class KITTI_dataset(data.Dataset):
             if self.resize_dmap is not None:
                 img_dw = proc_totensor(img_dw)
 
-        #        extM = self.poses[indx]
+        # Cropping
         if self.crop_w is not None:
             side_crop = int((self.img_size[0] - self.crop_w) / 2)
             side_crop_dw = int(side_crop * self.resize_dmap)
@@ -558,7 +621,7 @@ class KITTI_dataset(data.Dataset):
                 dmap_mask_imgsize = dmap_mask_imgsize[
                                     :, :, side_crop: (dmap_mask_imgsize.shape[-1] - side_crop)]
 
-        # read extrinsics #
+        # Read Params
         extM = np.matmul(M_imu2cam, np.linalg.inv(self.poses[indx]))
         # image path #
         scene_path = self.p_data.calib_path

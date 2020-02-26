@@ -40,6 +40,71 @@ def load_pretrained_model(model, pretrained_path, optimizer = None):
 
     return {"iter": pre_model_dict_info['iter']}
 
+def gaussian_torch(x, mu, sig):
+    return torch.exp(-torch.pow(x - mu, 2.) / (2 * np.power(sig, 2.)))
+
+d_candi_expanded_d = dict()
+def gen_soft_label_torch(d_candi, depthmap, variance, zero_invalid=False):
+    global d_candi_expanded_d
+    sstring = str(len(d_candi)) + "_" + str(depthmap.shape)
+    if sstring not in d_candi_expanded_d.keys():
+        d_candi_expanded = torch.tensor(d_candi).float().cuda().unsqueeze(-1).unsqueeze(-1).repeat(1, depthmap.shape[0],
+                                                                                                   depthmap.shape[1])
+        d_candi_expanded_d[sstring] = d_candi_expanded
+    else:
+        d_candi_expanded = d_candi_expanded_d[sstring]
+
+    # Warning, if a value in depthmap doesnt lie within d_candi range, it will become nan. zero_invalid forces it to -1
+    sigma = math.sqrt(variance)
+    dists = gaussian_torch(d_candi_expanded, depthmap, sigma)
+    dists = dists/torch.sum(dists, dim=0)
+    if zero_invalid: dists[dists != dists] = -1
+
+    return dists
+
+def soft_cross_entropy_loss(soft_label, x, mask=None, BV_log=False, ):
+    if BV_log:
+        x_softmax = torch.exp(x)
+    else:
+        x_softmax = F.softmax(x, dim=1)
+
+    # # Check to make sure that if i have a inf or a nan its at a failed label?
+    # for d in range(0, soft_label.shape[1]):
+    #     for r in range(0, soft_label.shape[2]):
+    #         for c in range(0, soft_label.shape[3]):
+    #             if x_softmax[0,d,r,c] == 0:
+    #                 if soft_label[0,d,r,c] == -1 or mask[0,r,c] == 0:
+    #                     x_softmax[0, d, r, c] = 1 # Should have been ignored
+    #                 else:
+    #                     #x_softmax[0, d, r, c] = 1
+    #                     #mask[0,r,c] = 0
+    #                     pass
+    #                     #x_softmax[0, d, r, c] = 1e-38
+    #                     #print((d, r, c))
+
+    # # Make the mask at 0 0
+    # for r in range(0, soft_label.shape[2]):
+    #     for c in range(0, soft_label.shape[3]):
+    #
+
+    log_x_softmax = torch.log(x_softmax)
+
+    log_x_softmax[log_x_softmax == float("-Inf")] = 0
+    log_x_softmax[log_x_softmax == float("Inf")] = 0
+    #log_x_softmax[log_x_softmax != log_x_softmax] = 0
+
+    #print(log_x_softmax)
+
+    loss = -torch.sum(soft_label * log_x_softmax, 1)
+
+    if mask is not None:
+        loss = loss * mask
+        nonzerocount = (mask == 1).sum()
+        loss = torch.sum(loss)/nonzerocount
+    else:
+        loss = torch.mean(loss)
+    return loss
+
 # Not diff
 def digitized_to_dpv(depth_digit, N):
     if depth_digit.shape[0] != 1:

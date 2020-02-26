@@ -341,6 +341,8 @@ def main():
     parser.add_argument('--lc', action='store_true', default=False,
                         help='velodyne_depth (False)')
     parser.add_argument('--drefine', type=str, default='', help='Additional flags for dnet')
+    parser.add_argument('--pytorch_scaling', action='store_true', default=False,
+                        help='pytorch scaling for data (False)')
 
     #hack_num = 326
     hack_num = 0
@@ -351,6 +353,7 @@ def main():
     # Arguments Parsing
     args = parser.parse_args()
     lc = args.lc
+    pytorch_scaling = args.pytorch_scaling
     test_interval = args.test_interval
     velodyne_depth = args.velodyne_depth
     pre_trained_folder = args.pre_trained_folder
@@ -431,6 +434,7 @@ def main():
 
         # Testing Data Loader
         testing_inputs = {
+            "pytorch_scaling": pytorch_scaling,
             "velodyne_depth": velodyne_depth,
             "dataset_path": dataset_path,
             "t_win_r": t_win_r,
@@ -454,6 +458,7 @@ def main():
 
         # Training Data Loader
         training_inputs = {
+            "pytorch_scaling": pytorch_scaling,
             "velodyne_depth": velodyne_depth,
             "dataset_path": dataset_path,
             "t_win_r": t_win_r,
@@ -615,9 +620,9 @@ def main():
         # Note time
         start = time.time()
 
-def generate_model_input(local_info_valid):
+def generate_model_input(local_info_valid, camside="left"):
     # Ensure same size
-    valid = (len(local_info_valid["left_cam_intrins"]) == len(local_info_valid["left_src_cam_poses"]) == len(local_info_valid["src_dats"]))
+    valid = (len(local_info_valid[camside+"_cam_intrins"]) == len(local_info_valid[camside+"_src_cam_poses"]) == len(local_info_valid["src_dats"]))
     if not valid:
         raise Exception('Batch size invalid')
 
@@ -630,35 +635,35 @@ def generate_model_input(local_info_valid):
     dmap_imgsize_arr = []
     dmap_arr = []
     for i in range(0, len(local_info_valid["src_dats"])):
-        dmap_imgsize_digit = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_imgsize_digit"]
+        dmap_imgsize_digit = local_info_valid["src_dats"][i][midval][camside+"_camera"]["dmap_imgsize_digit"]
         dmap_imgsize_digit_arr.append(dmap_imgsize_digit)
-        dmap_digit = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap"]
-        dmap_imgsize = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_imgsize"]
-        dmap = local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_raw"]
+        dmap_digit = local_info_valid["src_dats"][i][midval][camside+"_camera"]["dmap"]
+        dmap_imgsize = local_info_valid["src_dats"][i][midval][camside+"_camera"]["dmap_imgsize"]
+        dmap = local_info_valid["src_dats"][i][midval][camside+"_camera"]["dmap_raw"]
         dmap_digit_arr.append(dmap_digit)
         dmap_imgsize_arr.append(dmap_imgsize)
         dmap_arr.append(dmap)
     dmap_imgsize_digits = torch.cat(dmap_imgsize_digit_arr) # [B,256,384] uint64
     dmap_digits = torch.cat(dmap_digit_arr) # [B,64,96] uint64
     dmap_imgsizes = torch.cat(dmap_imgsize_arr)
-    dmap = torch.cat(dmap_arr)
+    dmaps = torch.cat(dmap_arr)
 
     intrinsics_arr = []
     intrinsics_up_arr = []
     unit_ray_arr = []
-    for i in range(0, len(local_info_valid["left_cam_intrins"])):
-        intr = local_info_valid["left_cam_intrins"][i]["intrinsic_M_cuda"]
+    for i in range(0, len(local_info_valid[camside+"_cam_intrins"])):
+        intr = local_info_valid[camside+"_cam_intrins"][i]["intrinsic_M_cuda"]
         intr_up = intr*4; intr_up[2,2] = 1;
         intrinsics_arr.append(intr.unsqueeze(0))
         intrinsics_up_arr.append(intr_up.unsqueeze(0))
-        unit_ray_arr.append(local_info_valid["left_cam_intrins"][i]["unit_ray_array_2D"].unsqueeze(0))
+        unit_ray_arr.append(local_info_valid[camside+"_cam_intrins"][i]["unit_ray_array_2D"].unsqueeze(0))
     intrinsics = torch.cat(intrinsics_arr)
     intrinsics_up = torch.cat(intrinsics_up_arr)
     unit_ray = torch.cat(unit_ray_arr)
 
     src_cam_poses_arr = []
-    for i in range(0, len(local_info_valid["left_src_cam_poses"])):
-        pose = local_info_valid["left_src_cam_poses"][i]
+    for i in range(0, len(local_info_valid[camside+"_src_cam_poses"])):
+        pose = local_info_valid[camside+"_src_cam_poses"][i]
         src_cam_poses_arr.append(pose[:,0:midval+1,:,:]) # currently [1x3x4x4]
     src_cam_poses = torch.cat(src_cam_poses_arr)
 
@@ -670,17 +675,28 @@ def generate_model_input(local_info_valid):
         rgb_set = []
         debug_path_int = []
         for j in range(0, len(local_info_valid["src_dats"][i])):
-            rgb_set.append(local_info_valid["src_dats"][i][j]["left_camera"]["img"])
-            debug_path_int.append(local_info_valid["src_dats"][i][j]["left_camera"]["img_path"])
-            #mask_set.append(local_info_valid["src_dats"][i][j]["left_camera"]["dmap_mask_imgsize"])
+            rgb_set.append(local_info_valid["src_dats"][i][j][camside+"_camera"]["img"])
+            debug_path_int.append(local_info_valid["src_dats"][i][j][camside+"_camera"]["img_path"])
             if j == midval: break
         rgb_arr.append(torch.cat(rgb_set).unsqueeze(0))
         debug_path.append(debug_path_int)
-        mask_imgsize_arr.append(local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_mask_imgsize"])
-        mask_arr.append(local_info_valid["src_dats"][i][midval]["left_camera"]["dmap_mask"])
+        mask_imgsize_arr.append(local_info_valid["src_dats"][i][midval][camside+"_camera"]["dmap_mask_imgsize"])
+        mask_arr.append(local_info_valid["src_dats"][i][midval][camside+"_camera"]["dmap_mask"])
     rgb = torch.cat(rgb_arr)
-    masks_imgsize = torch.cat(mask_imgsize_arr)
-    masks = torch.cat(mask_arr)
+    masks_imgsize = torch.cat(mask_imgsize_arr).float()
+    masks = torch.cat(mask_arr).float()
+
+    # Create Soft Label
+    d_candi = local_info_valid["d_candi"]
+    soft_labels_imgsize = []
+    soft_labels = []
+    variance = 0.001
+    for i in range(0, dmap_imgsizes.shape[0]):
+        # Clamping
+        dmap_imgsize = dmap_imgsizes[i,:,:].clamp(d_candi[0], d_candi[-1]) * masks_imgsize[i,0,:,:]
+        dmap = dmaps[i,:,:].clamp(d_candi[0], d_candi[-1]) * masks[i,0,:,:]
+        soft_labels_imgsize.append(util.gen_soft_label_torch(d_candi, dmap_imgsize.cuda(), variance, zero_invalid=True))
+        soft_labels.append(util.gen_soft_label_torch(d_candi, dmap.cuda(), variance, zero_invalid=True))
 
     model_input = {
         "intrinsics": intrinsics,
@@ -697,7 +713,9 @@ def generate_model_input(local_info_valid):
         "dmap_imgsize_digits": dmap_imgsize_digits,
         "dmap_digits": dmap_digits,
         "dmap_imgsizes": dmap_imgsizes,
-        "dmap": dmap
+        "dmaps": dmaps,
+        "soft_labels_imgsize": soft_labels_imgsize,
+        "soft_labels": soft_labels
     }
 
     return model_input, gt_input
@@ -762,7 +780,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
 
             # Truth
             depthmap_truth_all = gt_input["dmap_imgsizes"] # [1,256,384]
-            depthmap_truth_low_all = gt_input["dmap"] # [1,256,384]
+            depthmap_truth_low_all = gt_input["dmaps"] # [1,256,384]
 
             # Masks
             depth_mask_all = gt_input["masks_imgsizes"][:,:,:,:].float()
@@ -840,12 +858,14 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
                     cloud_low_orig = tocloud(depthmap_low_predicted_np, img_low, intr, None)
                     cloud_orig = tocloud(depthmap_predicted_np, img, intr_up, None)
                     cloud_truth = tocloud(torch.tensor(depthmap_truth_np[np.newaxis, :]), img, intr_up, None)
+                    cloud_low_truth = tocloud(torch.tensor(depthmap_truth_low_np[np.newaxis, :]), img_low, intr, None)
                     cv2.imshow("win", img_color)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    visualizer.addCloud(cloud_truth,2)
+                    visualizer.addCloud(cloud_low_truth, 2)
+                    #visualizer.addCloud(cloud_truth,2)
                     #visualizer.addCloud(cloud_orig,2)
-                    #visualizer.addCloud(slicecloud,2)
+                    visualizer.addCloud(slicecloud,2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()
                     key = cv2.waitKey(0)
@@ -886,7 +906,11 @@ def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     start = time.time()
 
     # Create input
+    #model_input, gt_input = generate_model_input(local_info_valid, "right")
+
     model_input, gt_input = generate_model_input(local_info_valid)
+
+    print(time.time() - start)
 
     BV_cur, BV_cur_refined = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
     # [B,128,64,96] [B,128,256,384]
@@ -897,6 +921,47 @@ def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
         #loss = loss + torch.sum(BV_cur[ibatch,:,:,:])
         loss = loss + F.nll_loss(BV_cur[ibatch,:,:,:].unsqueeze(0), gt_input["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
         loss = loss + F.nll_loss(BV_cur_refined[ibatch,:,:,:].unsqueeze(0), gt_input["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
+
+
+        # soft_label = gt_input["soft_labels"][ibatch].unsqueeze(0)
+        # hard_label = gt_input["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda()
+        # x = BV_cur[ibatch,:,:,:].unsqueeze(0)
+        # mask = gt_input["masks"][ibatch,:,:,:].cuda()
+        # dmap = gt_input["dmaps"][ibatch,:,:].unsqueeze(0)
+        #
+        # # soft_label = gt_input["soft_labels_imgsize"][ibatch].unsqueeze(0)
+        # # hard_label = gt_input["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda()
+        # # x = BV_cur_refined[ibatch,:,:,:].unsqueeze(0)
+        # # mask = gt_input["masks_imgsizes"][ibatch,:,:,:].cuda()
+        # # dmap = gt_input["dmap_imgsizes"][ibatch,:,:].unsqueeze(0)
+        #
+        # start = 0
+        # end = -1
+        # soft_label = soft_label[:,:,start:end,start:end]
+        # hard_label = hard_label[:,start:end,start:end]
+        # x = x[:,:,start:end,start:end]
+        # mask = mask[:,start:end,start:end]
+        # dmap = dmap[:,start:end,start:end]
+        #
+        # # Handle Nan too?
+        #
+        # # for r in range(0, dmap.shape[1]):
+        # #     for c in range(0, dmap.shape[2]):
+        # #         if dmap[0,r,c] == 0:
+        # #             mask[0,r,c] = 0
+        # #             soft_label[0, :, r, c] = 0
+        #
+        # #print(soft_label)
+        # print(mask)
+        # print(hard_label)
+        # print(dmap)
+        # d_candi = local_info_valid["d_candi"]
+        # print(d_candi[42])
+        #
+        # a = F.nll_loss(x, hard_label, ignore_index=0)
+        # b = util.soft_cross_entropy_loss(soft_label, x, mask=mask, BV_log=True)
+        # print((a,b))
+        # stop
 
     # What if we convert the DPV to a depth map, and regress that too?
 
@@ -981,6 +1046,7 @@ class BatchSchedulerMP:
         qmax = inputs["qmax"]
         n_epoch = inputs["n_epoch"]
         mode = inputs["mode"]
+        pytorch_scaling = inputs["pytorch_scaling"]
         velodyne_depth = inputs["velodyne_depth"]
         if mode == "train":
             split_txt = './kitti_split/training.txt'
@@ -999,7 +1065,7 @@ class BatchSchedulerMP:
         dataset = dataset_init(True, img_paths, dmap_paths, poses,
                                intrin_path=intrin_path, img_size=img_size, digitize=True,
                                d_candi=d_candi, d_candi_up=d_candi_up, resize_dmap=.25,
-                               crop_w=crop_w, velodyne_depth=velodyne_depth)
+                               crop_w=crop_w, velodyne_depth=velodyne_depth, pytorch_scaling=pytorch_scaling)
         BatchScheduler = batch_loader.Batch_Loader(
             batch_size=batch_size, fun_get_paths=fun_get_paths,
             dataset_traj=dataset, nTraj=len(traj_Indx), dataset_name=dataset_name, t_win_r=t_win_r,
