@@ -64,42 +64,18 @@ def gen_soft_label_torch(d_candi, depthmap, variance, zero_invalid=False):
 
 def soft_cross_entropy_loss(soft_label, x, mask=None, BV_log=False, ):
     if BV_log:
-        x_softmax = torch.exp(x)
+        #x_softmax = torch.exp(x)
+        log_x_softmax = x
     else:
         x_softmax = F.softmax(x, dim=1)
-
-    # # Check to make sure that if i have a inf or a nan its at a failed label?
-    # for d in range(0, soft_label.shape[1]):
-    #     for r in range(0, soft_label.shape[2]):
-    #         for c in range(0, soft_label.shape[3]):
-    #             if x_softmax[0,d,r,c] == 0:
-    #                 if soft_label[0,d,r,c] == -1 or mask[0,r,c] == 0:
-    #                     x_softmax[0, d, r, c] = 1 # Should have been ignored
-    #                 else:
-    #                     #x_softmax[0, d, r, c] = 1
-    #                     #mask[0,r,c] = 0
-    #                     pass
-    #                     #x_softmax[0, d, r, c] = 1e-38
-    #                     #print((d, r, c))
-
-    # # Make the mask at 0 0
-    # for r in range(0, soft_label.shape[2]):
-    #     for c in range(0, soft_label.shape[3]):
-    #
-
-    log_x_softmax = torch.log(x_softmax)
-
-    log_x_softmax[log_x_softmax == float("-Inf")] = 0
-    log_x_softmax[log_x_softmax == float("Inf")] = 0
-    #log_x_softmax[log_x_softmax != log_x_softmax] = 0
-
-    #print(log_x_softmax)
+        log_x_softmax = torch.log(x_softmax)
 
     loss = -torch.sum(soft_label * log_x_softmax, 1)
 
     if mask is not None:
         loss = loss * mask
         nonzerocount = (mask == 1).sum()
+        if nonzerocount == 0: return 0.
         loss = torch.sum(loss)/nonzerocount
     else:
         loss = torch.mean(loss)

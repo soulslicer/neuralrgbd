@@ -343,6 +343,7 @@ def main():
     parser.add_argument('--drefine', type=str, default='', help='Additional flags for dnet')
     parser.add_argument('--pytorch_scaling', action='store_true', default=False,
                         help='pytorch scaling for data (False)')
+    parser.add_argument('--softce', type=float, default=0., help='If soft cross entropy is wanted')
 
     #hack_num = 326
     hack_num = 0
@@ -352,6 +353,7 @@ def main():
 
     # Arguments Parsing
     args = parser.parse_args()
+    softce = args.softce
     lc = args.lc
     pytorch_scaling = args.pytorch_scaling
     test_interval = args.test_interval
@@ -370,6 +372,9 @@ def main():
     qpower = args.qpower
     ngpu = args.ngpu
     drefine = args.drefine
+
+    # Checks
+    #if softce and not pytorch_scaling: raise('Soft CE needs Pytorch scaling to be turned on?')
 
     # Linear
     #d_candi = np.linspace(args.d_min, args.d_max, nDepth)
@@ -505,6 +510,11 @@ def main():
     print('Done')
     global exit
 
+    # Additional Params
+    addparams = {
+        "softce": softce
+    }
+
     # Evaluate Model Graph
     if len(pre_trained_folder):
         import re
@@ -523,7 +533,7 @@ def main():
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
-            results, results_low = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, None, None)
+            results, results_low = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, addparams, None, None)
             rmses.append(results["rmse"][0]); rmses_low.append(results_low["rmse"][0]);
             sils.append(results["scale invariant log"][0]); sils_low.append(results_low["scale invariant log"][0])
         print("RMSES")
@@ -539,7 +549,7 @@ def main():
     # Test
     if test:
         model_KVnet.eval()
-        results = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain)
+        results = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, lightcurtain)
         print(results)
         sys.exit()
 
@@ -587,7 +597,7 @@ def main():
             # Need to deal with resetting input in the future too with some flag!
 
             # Train
-            output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, total_iter)
+            output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, addparams, total_iter)
             loss_v = output["loss"]
             #loss_v = 0
         else:
@@ -620,7 +630,7 @@ def main():
         # Note time
         start = time.time()
 
-def generate_model_input(local_info_valid, camside="left"):
+def generate_model_input(local_info_valid, camside="left", softce=0):
     # Ensure same size
     valid = (len(local_info_valid[camside+"_cam_intrins"]) == len(local_info_valid[camside+"_src_cam_poses"]) == len(local_info_valid["src_dats"]))
     if not valid:
@@ -687,16 +697,23 @@ def generate_model_input(local_info_valid, camside="left"):
     masks = torch.cat(mask_arr).float()
 
     # Create Soft Label
-    d_candi = local_info_valid["d_candi"]
-    soft_labels_imgsize = []
-    soft_labels = []
-    variance = 0.001
-    for i in range(0, dmap_imgsizes.shape[0]):
-        # Clamping
-        dmap_imgsize = dmap_imgsizes[i,:,:].clamp(d_candi[0], d_candi[-1]) * masks_imgsize[i,0,:,:]
-        dmap = dmaps[i,:,:].clamp(d_candi[0], d_candi[-1]) * masks[i,0,:,:]
-        soft_labels_imgsize.append(util.gen_soft_label_torch(d_candi, dmap_imgsize.cuda(), variance, zero_invalid=True))
-        soft_labels.append(util.gen_soft_label_torch(d_candi, dmap.cuda(), variance, zero_invalid=True))
+    if softce:
+        d_candi = local_info_valid["d_candi"]
+        soft_labels_imgsize = []
+        soft_labels = []
+        variance = softce
+        for i in range(0, dmap_imgsizes.shape[0]):
+            # Clamping
+            dmap_imgsize = dmap_imgsizes[i,:,:].clamp(d_candi[0], d_candi[-1]) * masks_imgsize[i,0,:,:]
+            dmap = dmaps[i,:,:].clamp(d_candi[0], d_candi[-1]) * masks[i,0,:,:]
+            soft_labels_imgsize.append(util.gen_soft_label_torch(d_candi, dmap_imgsize.cuda(), variance, zero_invalid=True))
+            soft_labels.append(util.gen_soft_label_torch(d_candi, dmap.cuda(), variance, zero_invalid=True))
+            # Generate Fake one with all 1
+            #soft_labels.append(util.digitized_to_dpv(dmap_digits[i,:,:].unsqueeze(0), len(d_candi)).squeeze(0).cuda())
+            #soft_labels_imgsize.append(util.digitized_to_dpv(dmap_imgsize_digits[i,:,:].unsqueeze(0), len(d_candi)).squeeze(0).cuda())
+    else:
+        soft_labels_imgsize = []
+        soft_labels = []
 
     model_input = {
         "intrinsics": intrinsics,
@@ -720,7 +737,7 @@ def generate_model_input(local_info_valid, camside="left"):
 
     return model_input, gt_input
 
-def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
+def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, lightcurtain):
     import deval.pyevaluatedepth_lib as dlib
     epsilon = sys.float_info.epsilon
     all_errors = []
@@ -862,10 +879,10 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
                     cv2.imshow("win", img_color)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    visualizer.addCloud(cloud_low_truth, 2)
+                    #visualizer.addCloud(cloud_low_truth, 2)
                     #visualizer.addCloud(cloud_truth,2)
-                    #visualizer.addCloud(cloud_orig,2)
-                    visualizer.addCloud(slicecloud,2)
+                    visualizer.addCloud(cloud_orig,2)
+                    #visualizer.addCloud(slicecloud,2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()
                     key = cv2.waitKey(0)
@@ -902,66 +919,38 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, visualizer, lightcurtain):
     results_low = dlib.evaluateErrors(all_errors_low)
     return results, results_low
 
-def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
-    start = time.time()
+def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter):
+    #start = time.time()
+    #print(time.time() - start)
 
-    # Create input
-    #model_input, gt_input = generate_model_input(local_info_valid, "right")
+    # Readout AddParams
+    softce = addparams["softce"]
 
-    model_input, gt_input = generate_model_input(local_info_valid)
+    # Create inputs
+    model_input_left, gt_input_left = generate_model_input(local_info_valid, "left", softce)
+    model_input_right, gt_input_right = generate_model_input(local_info_valid, "right", softce)
 
-    print(time.time() - start)
-
-    BV_cur, BV_cur_refined = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
-    # [B,128,64,96] [B,128,256,384]
+    # Run Forward
+    BV_cur_left, BV_cur_refined_left = torch.nn.parallel.data_parallel(model, model_input_left, range(ngpu)) # [B,128,64,96] [B,128,256,384]
+    BV_cur_right, BV_cur_refined_right = torch.nn.parallel.data_parallel(model, model_input_right, range(ngpu))  # [B,128,64,96] [B,128,256,384]
 
     # NLL Loss
     loss = 0
-    for ibatch in range(BV_cur.shape[0]):
-        #loss = loss + torch.sum(BV_cur[ibatch,:,:,:])
-        loss = loss + F.nll_loss(BV_cur[ibatch,:,:,:].unsqueeze(0), gt_input["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
-        loss = loss + F.nll_loss(BV_cur_refined[ibatch,:,:,:].unsqueeze(0), gt_input["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
-
-
-        # soft_label = gt_input["soft_labels"][ibatch].unsqueeze(0)
-        # hard_label = gt_input["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda()
-        # x = BV_cur[ibatch,:,:,:].unsqueeze(0)
-        # mask = gt_input["masks"][ibatch,:,:,:].cuda()
-        # dmap = gt_input["dmaps"][ibatch,:,:].unsqueeze(0)
-        #
-        # # soft_label = gt_input["soft_labels_imgsize"][ibatch].unsqueeze(0)
-        # # hard_label = gt_input["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda()
-        # # x = BV_cur_refined[ibatch,:,:,:].unsqueeze(0)
-        # # mask = gt_input["masks_imgsizes"][ibatch,:,:,:].cuda()
-        # # dmap = gt_input["dmap_imgsizes"][ibatch,:,:].unsqueeze(0)
-        #
-        # start = 0
-        # end = -1
-        # soft_label = soft_label[:,:,start:end,start:end]
-        # hard_label = hard_label[:,start:end,start:end]
-        # x = x[:,:,start:end,start:end]
-        # mask = mask[:,start:end,start:end]
-        # dmap = dmap[:,start:end,start:end]
-        #
-        # # Handle Nan too?
-        #
-        # # for r in range(0, dmap.shape[1]):
-        # #     for c in range(0, dmap.shape[2]):
-        # #         if dmap[0,r,c] == 0:
-        # #             mask[0,r,c] = 0
-        # #             soft_label[0, :, r, c] = 0
-        #
-        # #print(soft_label)
-        # print(mask)
-        # print(hard_label)
-        # print(dmap)
-        # d_candi = local_info_valid["d_candi"]
-        # print(d_candi[42])
-        #
-        # a = F.nll_loss(x, hard_label, ignore_index=0)
-        # b = util.soft_cross_entropy_loss(soft_label, x, mask=mask, BV_log=True)
-        # print((a,b))
-        # stop
+    for ibatch in range(BV_cur_left.shape[0]):
+        if not softce:
+            # Left Losses
+            loss = loss + F.nll_loss(BV_cur_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
+            loss = loss + F.nll_loss(BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
+            # Right Losses
+            loss = loss + F.nll_loss(BV_cur_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
+            loss = loss + F.nll_loss(BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
+        else:
+            # Left Losses
+            loss = loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels"][ibatch].unsqueeze(0), BV_cur_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks"][ibatch,:,:,:].cuda(), BV_log=True)
+            loss = loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks_imgsizes"][ibatch,:,:,:].cuda(), BV_log=True)
+            # Right Losses
+            loss = loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels"][ibatch].unsqueeze(0), BV_cur_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks"][ibatch,:,:,:].cuda(), BV_log=True)
+            loss = loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks_imgsizes"][ibatch,:,:,:].cuda(), BV_log=True)
 
     # What if we convert the DPV to a depth map, and regress that too?
 
@@ -970,7 +959,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     # Demonstrate light curtain on KITTI dataset
 
     # Backward
-    bsize = BV_cur.shape[0]
+    bsize = BV_cur_left.shape[0]*2
     optimizer_KV.zero_grad()
     loss = loss / torch.tensor(float(bsize)).cuda(loss.get_device()) # SHOULD BE DIVIDED BY BATCH SIZE!
     loss.backward()
@@ -979,20 +968,20 @@ def train(model, optimizer_KV, local_info_valid, ngpu, total_iter):
     # Debug Viz (comment if needed)
     if total_iter % 10 == -1:
         bnum = 0
-        img = model_input["rgb"][bnum,-1,:,:,:] # [1,3,256,384]
+        img = model_input_left["rgb"][bnum,-1,:,:,:] # [1,3,256,384]
         img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
         img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
         img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
         img = cv2.cvtColor(img[:, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
         img = img[:,:,0]
         ###
-        dmap_up_digit = gt_input["dmap_imgsize_digits"][bnum,:,:].unsqueeze(0) # [1,256,384] uint64
+        dmap_up_digit = gt_input_left["dmap_imgsize_digits"][bnum,:,:].unsqueeze(0) # [1,256,384] uint64
         d_candi = local_info_valid["d_candi"]
         dpv = util.digitized_to_dpv(dmap_up_digit, len(d_candi))
         depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi).squeeze(0).numpy() # [1,256,384]
         depthmap_quantized = depthmap_quantized/100.
         ###
-        dpv_predicted = BV_cur_refined[bnum,:,:,:].unsqueeze(0).detach().cpu()
+        dpv_predicted = BV_cur_refined_left[bnum,:,:,:].unsqueeze(0).detach().cpu()
         depthmap_quantized_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True).squeeze(0).numpy()  # [1,256,384]
         depthmap_quantized_predicted = depthmap_quantized_predicted / 100.
         ###
