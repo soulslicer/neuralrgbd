@@ -53,7 +53,7 @@ def hack(cloud):
         fcloud[i] = cloud[i]
     return fcloud
 
-def tocloud(depth, rgb, intr, extr=None):
+def tocloud(depth, rgb, intr, extr=None, rgbr=None):
     pts = util.depth_to_pts(depth, intr)
     pts = pts.reshape((3, pts.shape[1] * pts.shape[2]))
     # pts_numpy = pts.numpy()
@@ -68,6 +68,12 @@ def tocloud(depth, rgb, intr, extr=None):
     # Convert Color
     pts_color = rgb.reshape((3, rgb.shape[1] * rgb.shape[2])) * 255
     pts_normal = np.zeros((3, rgb.shape[1] * rgb.shape[2]))
+
+    # RGBR
+    if rgbr is not None:
+        pts_color[0,:] = rgbr[0]
+        pts_color[1, :] = rgbr[1]
+        pts_color[2, :] = rgbr[2]
 
     # Visualize
     all_together = np.concatenate([pts_numpy, pts_color, pts_normal], 0).astype(np.float32).T
@@ -89,40 +95,44 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     Stereo Warp (WE ASSUME LEFT AND RIGHT INTRINSICS ARE THE SAME)
     """
 
-    # batch_num = 1
-    # src_frame = 3
-    # target_frame = src_frame  # FIXED
-    #
-    # target_rgb_img = src_dats_in[batch_num][target_frame]["left_camera"]["img"][0, :, :, :]
-    # target_rgb_img[0, :, :] = target_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + \
-    #                           kitti.__imagenet_stats["mean"][0]
-    # target_rgb_img[1, :, :] = target_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + \
-    #                           kitti.__imagenet_stats["mean"][1]
-    # target_rgb_img[2, :, :] = target_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + \
-    #                           kitti.__imagenet_stats["mean"][2]
-    # target_rgb_img = torch.unsqueeze(target_rgb_img, 0)
-    #
-    # src_rgb_img = src_dats_in[batch_num][src_frame]["right_camera"]["img"][0, :, :, :]
-    # src_rgb_img[0, :, :] = src_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-    # src_rgb_img[1, :, :] = src_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-    # src_rgb_img[2, :, :] = src_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-    # src_rgb_img = torch.unsqueeze(src_rgb_img, 0)
-    #
-    # target_depth_map = src_dats_in[batch_num][target_frame]["left_camera"]["dmap_imgsize"]
-    # depth_mask = target_depth_map > 0.;
-    # #depth_mask = depth_mask.float()
-    #
-    # pose_target2src = T_left2right
-    # # pose_target2src = torch.inverse(pose_target2src)
-    # pose_target2src = torch.unsqueeze(pose_target2src, 0)
-    #
-    # intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
-    # #intr[0,0] *= 2;
-    # intr[2, 2] = 1;
-    # intr = intr[0:3, 0:3]
-    # intr = torch.tensor(intr.astype(np.float32))
-    # intr = torch.unsqueeze(intr, 0)
-    #
+    batch_num = 0
+    src_frame = 2
+    target_frame = src_frame  # FIXED
+
+    target_rgb_img = src_dats_in[batch_num][target_frame]["left_camera"]["img"][0, :, :, :]
+    target_rgb_img[0, :, :] = target_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + \
+                              kitti.__imagenet_stats["mean"][0]
+    target_rgb_img[1, :, :] = target_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + \
+                              kitti.__imagenet_stats["mean"][1]
+    target_rgb_img[2, :, :] = target_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + \
+                              kitti.__imagenet_stats["mean"][2]
+    target_rgb_img = torch.unsqueeze(target_rgb_img, 0)
+
+    src_rgb_img = src_dats_in[batch_num][src_frame]["right_camera"]["img"][0, :, :, :]
+    src_rgb_img[0, :, :] = src_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+    src_rgb_img[1, :, :] = src_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+    src_rgb_img[2, :, :] = src_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    src_rgb_img = torch.unsqueeze(src_rgb_img, 0)
+
+    target_depth_map = src_dats_in[batch_num][target_frame]["left_camera"]["dmap_imgsize"]
+    depth_mask = target_depth_map > 0.;
+    src_depth_map = src_dats_in[batch_num][target_frame]["right_camera"]["dmap_imgsize"]
+    src_depth_mask = src_depth_map > 0.;
+    #depth_mask = depth_mask.float()
+
+    pose_target2src = T_left2right
+    # pose_target2src = torch.inverse(pose_target2src)
+    pose_target2src = torch.unsqueeze(pose_target2src, 0)
+
+    intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
+    #intr[0,0] *= 2;
+    intr[2, 2] = 1;
+    intr = intr[0:3, 0:3]
+    intr = torch.tensor(intr.astype(np.float32))
+    intr = torch.unsqueeze(intr, 0)
+
+    #### RGB MODE ####
+
     # target_warped_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
     #
     # full_mask = depth_mask & valid_points
@@ -135,19 +145,119 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     # target_rgb_img = cv2.cvtColor(target_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
     # target_warped_img = cv2.cvtColor(target_warped_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
     # #comb = target_rgb_img * 0.5 + target_warped_img * 0.5
-    # comb = np.power(target_rgb_img - target_warped_img, 2)
-    #
-    # #fimage = np.vstack((target_rgb_img, src_rgb_img))
+    # comb = np.abs(target_rgb_img - target_warped_img)
     # fimage = np.vstack((target_rgb_img, target_warped_img, comb))
-    #
-    # print(target_rgb_img.shape)
-    # print(intr)
     #
     # cv2.namedWindow("fimage")
     # cv2.moveWindow("fimage", 2500, 50)
     # cv2.imshow("fimage", fimage)
     # cv2.waitKey(0)
     # stop
+
+    #### DEPTH MODE ####
+
+
+
+    src_depth_img = src_dats_in[batch_num][src_frame]["right_camera"]["dmap_imgsize"][0, :, :].unsqueeze(0).unsqueeze(0)
+    target_depth_img = src_dats_in[batch_num][src_frame]["left_camera"]["dmap_imgsize"][0, :, :].unsqueeze(0).unsqueeze(0)
+
+    #T_left2right = torch.eye(4)
+    #pose_target2src = T_left2right.unsqueeze(0)
+
+    # ## Hack
+    # faggot = iv.transform_dmap(src_depth_img[0, 0, :, :], src_rgb_img[0, :, :, :],
+    #                                                   torch.inverse(T_left2right), intr[0, :, :],
+    #                                                   src_depth_mask.float())
+    #
+    # # faggot = iv.transform_dmap(target_depth_img[0, 0, :, :], target_rgb_img[0, :, :, :],
+    # #                                                   T_left2right, intr[0, :, :],
+    # #                                                   depth_mask.float())
+    #
+    # target_warped_rgb_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
+    # target_warped_rgb_img *= depth_mask.float()
+    # target_warped_rgb_img = cv2.cvtColor(target_warped_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0),
+    #                                      cv2.COLOR_BGR2RGB)
+    #
+    #
+    # faggot = cv2.cvtColor(faggot[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # fimage = np.vstack((faggot, target_warped_rgb_img, np.abs(faggot*0.5 + target_warped_rgb_img*0.5)))
+    # cv2.namedWindow("fimage")
+    # cv2.moveWindow("fimage", 2500, 50)
+    # cv2.imshow("fimage", fimage)
+    # cv2.waitKey(0)
+    # print(faggot.shape)
+    # stop
+
+    # src_warped_depth_img = iv.transform_dmap(target_depth_img[0, 0, :, :], target_rgb_img[0, :, :, :],
+    #                                                   T_left2right, intr[0, :, :],
+    #                                                   depth_mask.float())
+
+
+    target_warped_depth_img = iv.transform_dmap(src_depth_img[0, 0, :, :], src_rgb_img[0, :, :, :],
+                                                      torch.inverse(T_left2right), intr[0, :, :],
+                                                      src_depth_mask.float())
+
+
+
+    target_warped_depth_img2, valid_points = iv.inverse_warp(src_depth_img, target_depth_map, pose_target2src, intr, 'nearest')
+    target_warped_depth_img2 = target_warped_depth_img2.squeeze(0)
+
+    print(target_warped_depth_img2.shape)
+
+
+    # # Warp RGB
+    # target_warped_rgb_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
+    #
+    # #T_left2right = torch.eye(4)
+    #
+    # # Warp Depth
+    # pose_target2src = T_left2right.unsqueeze(0)
+    # src_depth_img_corrected, hack = iv.transform_dmap(src_depth_img[0,0,:,:], src_rgb_img[0,:,:,:], torch.inverse(T_left2right), intr[0,:,:], src_depth_mask.float())
+    # target_warped_depth_img, valid_points = iv.inverse_warp(src_depth_img_corrected.unsqueeze(0).unsqueeze(0), target_depth_map, pose_target2src, intr)
+    #
+    # print(hack.shape)
+    #
+    # # Apply Mask
+    # full_mask = depth_mask & valid_points
+    # full_mask = full_mask.float()
+    # target_depth_img = target_depth_img * full_mask.float()
+    # target_rgb_img = target_rgb_img * full_mask.float()
+
+    a = tocloud(target_warped_depth_img2, target_rgb_img[0,:,:,:], intr[0,:,:], None)
+    visualizer.addCloud(a, 1)
+    #b = tocloud(target_warped_depth_img, target_rgb_img[0,:,:,:], intr[0,:,:], None)
+    #visualizer.addCloud(b, 2)
+    visualizer.swapBuffer()
+    while 1: time.sleep(1)
+
+    # # Visualize RGB
+    # src_rgb_img = cv2.cvtColor(src_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # target_rgb_img = cv2.cvtColor(target_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # target_warped_rgb_img = cv2.cvtColor(target_warped_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # #comb = target_rgb_img * 0.5 + target_warped_img * 0.5
+    # comb = np.abs(target_rgb_img - target_warped_rgb_img)
+    # fimage = np.vstack((target_rgb_img, target_warped_rgb_img, comb))
+    # cv2.namedWindow("fimage")
+    # cv2.moveWindow("fimage", 2500, 50)
+    # cv2.imshow("fimage", fimage)
+    # cv2.waitKey(0)
+    # stop
+
+    # Visualize Depth
+    target_depth_img = target_depth_img[0,0,:,:].numpy()/100.
+    target_warped_depth_img = target_warped_depth_img[0,0,:,:].numpy()/100.
+    diff = np.abs(target_warped_depth_img - target_depth_img)
+    #diff = target_depth_img * 0.5 + target_warped_depth_img * 0.5
+    fimage = np.vstack((target_depth_img, target_warped_depth_img, diff))
+    cv2.namedWindow("fimage")
+    cv2.moveWindow("fimage", 2500, 50)
+    cv2.imshow("fimage", fimage)
+    cv2.waitKey(0)
+    stop
+
+
+
+    stop
 
     """
     Left Cam Warp
@@ -216,79 +326,79 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     Left Viz Pt Cloud
     """
 
-    # (Debug Visualize - Left)
-    batch_num = 0
-    for idx, datum in enumerate(src_dats_in[batch_num]):
-        datum = datum["left_camera"]
-        print(datum["img_path"])
-
-        # Images
-        rgb_img = datum["img"][0, :, :, :].numpy()
-        rgb_lowres_img = datum["img_dw"][0, :, :, :].numpy()
-        rgb_img[0, :, :] = rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-        rgb_img[1, :, :] = rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-        rgb_img[2, :, :] = rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-        rgb_lowres_img[0, :, :] = rgb_lowres_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-        rgb_lowres_img[1, :, :] = rgb_lowres_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-        rgb_lowres_img[2, :, :] = rgb_lowres_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-        gray_img = datum["img_gray"][0, 0, :, :].numpy()
-        depth_imgsize = datum["dmap_imgsize"]
-        depth_mask = depth_imgsize > 0.;
-        depth_mask = depth_mask.float()
-        depth_digit = datum["dmap_imgsize_digit"]
-        depth_digit_up = datum["dmap_up4_imgsize_digit"]
-        depth_digit_lowres = datum["dmap"]
-        transform = left_src_cam_poses_in[batch_num, idx, :, :]
-
-        # Low Res Depth Quantized
-        #dpv = util.digitized_to_dpv(depth_digit_lowres, len(d_candi))
-        #depthmap_lowres_quantized = util.dpv_to_depthmap(dpv, d_candi)
-        #depthmap_lowres_quantized = datum["dmap_raw"]
-
-        # Low Depth Quantized
-        dpv = util.digitized_to_dpv(depth_digit, len(d_candi))
-        depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi) * depth_mask
-
-        # High Depth Quantized
-        dpv = util.digitized_to_dpv(depth_digit_up, len(d_candi_up))
-        depthmap_up_quantized = util.dpv_to_depthmap(dpv, d_candi_up) * depth_mask
-
-        # Original Depth Map
-        depthmap_orig = depth_imgsize
-
-        # Intr change
-        intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
-        intr[2, 2] = 1;
-
-        # Cloud
-        cloud_orig = tocloud(depthmap_orig, rgb_img, intr, transform)
-        cloud_quantized = tocloud(depthmap_quantized, rgb_img, intr, transform)
-        cloud_up_quantized = tocloud(depthmap_up_quantized, rgb_img, intr, transform)
-        #cloud_lowres_quantized = tocloud(depthmap_lowres_quantized, rgb_lowres_img, left_cam_intrin_in[batch_num]["intrinsic_M"], transform)
-
-        cloud_quantized[:,1] += 0.;
-        cloud_up_quantized[:, 1] += 0.;
-
-        # Cloud for distance
-        dcloud = []
-        for m in range(0, 30):
-            dcloud.append([0,0,m, 255,255,255, 0,0,0])
-        dcloud = np.array(dcloud).astype(np.float32)
-
-        # IMPLEMENT SOFT TARGET ALGO
-        # DO DURING TRAINING TIME BUT HOW
-
-        #visualizer.addCloud(cloud_orig, 2)
-        visualizer.addCloud(cloud_up_quantized, 2)
-        #visualizer.addCloud(cloud_lowres_quantized, 3)
-        visualizer.addCloud(dcloud, 4)
-        visualizer.swapBuffer()
-
-        # Visualize RGB Image
-        rgb_img = rgb_img.transpose(1, 2, 0)
-        rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB)
-        cv2.imshow("win", rgb_img)
-        cv2.waitKey(0)
+    # # (Debug Visualize - Left)
+    # batch_num = 0
+    # for idx, datum in enumerate(src_dats_in[batch_num]):
+    #     datum = datum["left_camera"]
+    #     print(datum["img_path"])
+    #
+    #     # Images
+    #     rgb_img = datum["img"][0, :, :, :].numpy()
+    #     rgb_lowres_img = datum["img_dw"][0, :, :, :].numpy()
+    #     rgb_img[0, :, :] = rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+    #     rgb_img[1, :, :] = rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+    #     rgb_img[2, :, :] = rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    #     rgb_lowres_img[0, :, :] = rgb_lowres_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+    #     rgb_lowres_img[1, :, :] = rgb_lowres_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+    #     rgb_lowres_img[2, :, :] = rgb_lowres_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    #     gray_img = datum["img_gray"][0, 0, :, :].numpy()
+    #     depth_imgsize = datum["dmap_imgsize"]
+    #     depth_mask = depth_imgsize > 0.;
+    #     depth_mask = depth_mask.float()
+    #     depth_digit = datum["dmap_imgsize_digit"]
+    #     depth_digit_up = datum["dmap_up4_imgsize_digit"]
+    #     depth_digit_lowres = datum["dmap"]
+    #     transform = left_src_cam_poses_in[batch_num, idx, :, :]
+    #
+    #     # Low Res Depth Quantized
+    #     #dpv = util.digitized_to_dpv(depth_digit_lowres, len(d_candi))
+    #     #depthmap_lowres_quantized = util.dpv_to_depthmap(dpv, d_candi)
+    #     #depthmap_lowres_quantized = datum["dmap_raw"]
+    #
+    #     # Low Depth Quantized
+    #     dpv = util.digitized_to_dpv(depth_digit, len(d_candi))
+    #     depthmap_quantized = util.dpv_to_depthmap(dpv, d_candi) * depth_mask
+    #
+    #     # High Depth Quantized
+    #     dpv = util.digitized_to_dpv(depth_digit_up, len(d_candi_up))
+    #     depthmap_up_quantized = util.dpv_to_depthmap(dpv, d_candi_up) * depth_mask
+    #
+    #     # Original Depth Map
+    #     depthmap_orig = depth_imgsize
+    #
+    #     # Intr change
+    #     intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
+    #     intr[2, 2] = 1;
+    #
+    #     # Cloud
+    #     cloud_orig = tocloud(depthmap_orig, rgb_img, intr, transform)
+    #     cloud_quantized = tocloud(depthmap_quantized, rgb_img, intr, transform)
+    #     cloud_up_quantized = tocloud(depthmap_up_quantized, rgb_img, intr, transform)
+    #     #cloud_lowres_quantized = tocloud(depthmap_lowres_quantized, rgb_lowres_img, left_cam_intrin_in[batch_num]["intrinsic_M"], transform)
+    #
+    #     cloud_quantized[:,1] += 0.;
+    #     cloud_up_quantized[:, 1] += 0.;
+    #
+    #     # Cloud for distance
+    #     dcloud = []
+    #     for m in range(0, 30):
+    #         dcloud.append([0,0,m, 255,255,255, 0,0,0])
+    #     dcloud = np.array(dcloud).astype(np.float32)
+    #
+    #     # IMPLEMENT SOFT TARGET ALGO
+    #     # DO DURING TRAINING TIME BUT HOW
+    #
+    #     #visualizer.addCloud(cloud_orig, 2)
+    #     visualizer.addCloud(cloud_up_quantized, 2)
+    #     #visualizer.addCloud(cloud_lowres_quantized, 3)
+    #     visualizer.addCloud(dcloud, 4)
+    #     visualizer.swapBuffer()
+    #
+    #     # Visualize RGB Image
+    #     rgb_img = rgb_img.transpose(1, 2, 0)
+    #     rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB)
+    #     cv2.imshow("win", rgb_img)
+    #     cv2.waitKey(0)
 
 
 
@@ -716,19 +826,19 @@ def generate_model_input(local_info_valid, camside="left", softce=0):
         soft_labels = []
 
     model_input = {
-        "intrinsics": intrinsics,
-        "intrinsics_up": intrinsics_up,
-        "unit_ray": unit_ray,
-        "src_cam_poses": src_cam_poses,
-        "rgb": rgb,
+        "intrinsics": intrinsics.cuda(),
+        "intrinsics_up": intrinsics_up.cuda(),
+        "unit_ray": unit_ray.cuda(),
+        "src_cam_poses": src_cam_poses.cuda(),
+        "rgb": rgb.cuda(),
         "bv_predict": None # Has to be [B, 64, H, W]
     }
 
     gt_input = {
-        "masks_imgsizes": masks_imgsize,
-        "masks": masks,
-        "dmap_imgsize_digits": dmap_imgsize_digits,
-        "dmap_digits": dmap_digits,
+        "masks_imgsizes": masks_imgsize.cuda(),
+        "masks": masks.cuda(),
+        "dmap_imgsize_digits": dmap_imgsize_digits.cuda(),
+        "dmap_digits": dmap_digits.cuda(),
         "dmap_imgsizes": dmap_imgsizes,
         "dmaps": dmaps,
         "soft_labels_imgsize": soft_labels_imgsize,
@@ -768,7 +878,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             local_info_valid = batch_loader.get_valid_items(local_info)
             local_info_valid["d_candi"] = d_candi
 
-            # viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+            viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
             # print("---")
             # continue
 
@@ -924,6 +1034,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter):
     #print(time.time() - start)
 
     # Readout AddParams
+    d_candi = local_info_valid["d_candi"]
     softce = addparams["softce"]
 
     # Create inputs
@@ -939,18 +1050,141 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter):
     for ibatch in range(BV_cur_left.shape[0]):
         if not softce:
             # Left Losses
-            loss = loss + F.nll_loss(BV_cur_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
-            loss = loss + F.nll_loss(BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
+            loss = loss + F.nll_loss(BV_cur_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
+            loss = loss + F.nll_loss(BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
             # Right Losses
-            loss = loss + F.nll_loss(BV_cur_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
-            loss = loss + F.nll_loss(BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0).cuda(), ignore_index=0)
+            loss = loss + F.nll_loss(BV_cur_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
+            loss = loss + F.nll_loss(BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
         else:
             # Left Losses
-            loss = loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels"][ibatch].unsqueeze(0), BV_cur_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks"][ibatch,:,:,:].cuda(), BV_log=True)
-            loss = loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks_imgsizes"][ibatch,:,:,:].cuda(), BV_log=True)
+            loss = loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels"][ibatch].unsqueeze(0), BV_cur_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks"][ibatch,:,:,:], BV_log=True)
+            loss = loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks_imgsizes"][ibatch,:,:,:], BV_log=True)
             # Right Losses
-            loss = loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels"][ibatch].unsqueeze(0), BV_cur_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks"][ibatch,:,:,:].cuda(), BV_log=True)
-            loss = loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks_imgsizes"][ibatch,:,:,:].cuda(), BV_log=True)
+            loss = loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels"][ibatch].unsqueeze(0), BV_cur_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks"][ibatch,:,:,:], BV_log=True)
+            loss = loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks_imgsizes"][ibatch,:,:,:], BV_log=True)
+
+    # Regress all depthmaps once here
+    small_dm_left_arr = []
+    large_dm_left_arr = []
+    small_dm_right_arr = []
+    large_dm_right_arr = []
+    for ibatch in range(BV_cur_left.shape[0]):
+        small_dm_left_arr.append(util.dpv_to_depthmap(BV_cur_left[ibatch,:,:,:].unsqueeze(0), d_candi, BV_log=True))
+        large_dm_left_arr.append(util.dpv_to_depthmap(BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0), d_candi, BV_log=True))
+        small_dm_right_arr.append(util.dpv_to_depthmap(BV_cur_right[ibatch, :, :, :].unsqueeze(0), d_candi, BV_log=True))
+        large_dm_right_arr.append(util.dpv_to_depthmap(BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0), d_candi, BV_log=True))
+
+    # Downsample Consistency Loss (Should we even have a mask here?)
+    dcloss = 0
+    for ibatch in range(BV_cur_left.shape[0]):
+        # Left
+        mask_left = gt_input_left["masks"][ibatch,:,:,:]
+        small_dm_left = small_dm_left_arr[ibatch]
+        large_dm_left = large_dm_left_arr[ibatch]
+        downscaled_dm_left = F.interpolate(large_dm_left.unsqueeze(0), size=[small_dm_left.shape[1], small_dm_left.shape[2]], mode='nearest').squeeze(0)
+        #uloss = uloss + (((small_dm_left - downscaled_dm_left).abs() / (small_dm_left + downscaled_dm_left).abs()).clamp(0, 1) * mask_left).sum() / mask_left.sum()
+        dcloss = dcloss + torch.mean(((small_dm_left - downscaled_dm_left).abs() / (small_dm_left + downscaled_dm_left).abs()).clamp(0, 1))
+        # Right
+        mask_right = gt_input_right["masks"][ibatch,:,:,:]
+        small_dm_right = small_dm_right_arr[ibatch]
+        large_dm_right = large_dm_right_arr[ibatch]
+        downscaled_dm_right = F.interpolate(large_dm_right.unsqueeze(0), size=[small_dm_right.shape[1], small_dm_right.shape[2]], mode='nearest').squeeze(0)
+        #uloss = uloss + (((small_dm_right - downscaled_dm_right).abs() / (small_dm_right + downscaled_dm_right).abs()).clamp(0, 1) * mask_right).sum() / mask_right.sum()
+        dcloss = dcloss + torch.mean(((small_dm_right - downscaled_dm_right).abs() / (small_dm_right + downscaled_dm_right).abs()).clamp(0, 1))
+
+    # Depth Stereo Consistency Loss
+    T_left2right = local_info_valid["T_left2right"]
+    pose_target2src = T_left2right
+    pose_target2src = torch.unsqueeze(pose_target2src, 0).cuda()
+    dscloss = 0
+    for ibatch in range(BV_cur_left.shape[0]):
+        # Go from Right camera to left camera. We assume left and right intrinsics are the same cos rectified
+        # Get Intrinsics
+        intr_up_left = model_input_left["intrinsics_up"][ibatch,:,:].unsqueeze(0)
+        intr_left = model_input_left["intrinsics"][ibatch, :, :].unsqueeze(0)
+        intr_up_right = model_input_right["intrinsics_up"][ibatch, :, :].unsqueeze(0)
+        intr_right = model_input_right["intrinsics"][ibatch, :, :].unsqueeze(0)
+        # Warp
+        src_img = large_dm_right_arr[ibatch].unsqueeze(0)
+        target_img = large_dm_left_arr[ibatch].unsqueeze(0)
+        target_depth_map = large_dm_left_arr[ibatch]
+        target_warped_img, valid_points = iv.inverse_warp(src_img, target_depth_map, pose_target2src, intr_up_left) # WRONG
+
+
+
+        target_warped_img = target_warped_img.squeeze(0)
+        valid_points = valid_points.float()
+        dscloss = dscloss + (((target_warped_img - target_img).abs() / (target_warped_img + target_img).abs()).clamp(0, 1) * valid_points).sum() / valid_points.sum()
+
+    print(dscloss)
+
+
+    # [2,5,4,4]
+
+    """
+    Stereo Warp (WE ASSUME LEFT AND RIGHT INTRINSICS ARE THE SAME)
+    """
+
+    # batch_num = 1
+    # src_frame = 3
+    # target_frame = src_frame  # FIXED
+    #
+    # target_rgb_img = src_dats_in[batch_num][target_frame]["left_camera"]["img"][0, :, :, :]
+    # target_rgb_img[0, :, :] = target_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + \
+    #                           kitti.__imagenet_stats["mean"][0]
+    # target_rgb_img[1, :, :] = target_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + \
+    #                           kitti.__imagenet_stats["mean"][1]
+    # target_rgb_img[2, :, :] = target_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + \
+    #                           kitti.__imagenet_stats["mean"][2]
+    # target_rgb_img = torch.unsqueeze(target_rgb_img, 0)
+    #
+    # src_rgb_img = src_dats_in[batch_num][src_frame]["right_camera"]["img"][0, :, :, :]
+    # src_rgb_img[0, :, :] = src_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+    # src_rgb_img[1, :, :] = src_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+    # src_rgb_img[2, :, :] = src_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    # src_rgb_img = torch.unsqueeze(src_rgb_img, 0)
+    #
+    # target_depth_map = src_dats_in[batch_num][target_frame]["left_camera"]["dmap_imgsize"]
+    # depth_mask = target_depth_map > 0.;
+    # #depth_mask = depth_mask.float()
+    #
+    # pose_target2src = T_left2right
+    # # pose_target2src = torch.inverse(pose_target2src)
+    # pose_target2src = torch.unsqueeze(pose_target2src, 0)
+    #
+    # intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
+    # #intr[0,0] *= 2;
+    # intr[2, 2] = 1;
+    # intr = intr[0:3, 0:3]
+    # intr = torch.tensor(intr.astype(np.float32))
+    # intr = torch.unsqueeze(intr, 0)
+    #
+    # target_warped_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
+    #
+    # full_mask = depth_mask & valid_points
+    # full_mask = full_mask.float()
+    #
+    # target_rgb_img = target_rgb_img * full_mask.float()
+    #
+    # # Visualize RGB Image
+    # src_rgb_img = cv2.cvtColor(src_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # target_rgb_img = cv2.cvtColor(target_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # target_warped_img = cv2.cvtColor(target_warped_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # #comb = target_rgb_img * 0.5 + target_warped_img * 0.5
+    # comb = np.power(target_rgb_img - target_warped_img, 2)
+    #
+    # #fimage = np.vstack((target_rgb_img, src_rgb_img))
+    # fimage = np.vstack((target_rgb_img, target_warped_img, comb))
+    #
+    # print(target_rgb_img.shape)
+    # print(intr)
+    #
+    # cv2.namedWindow("fimage")
+    # cv2.moveWindow("fimage", 2500, 50)
+    # cv2.imshow("fimage", fimage)
+    # cv2.waitKey(0)
+    # stop
+
 
     # What if we convert the DPV to a depth map, and regress that too?
 
