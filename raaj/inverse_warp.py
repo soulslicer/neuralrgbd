@@ -152,7 +152,7 @@ def pose_vec2mat(vec, rotation_mode='euler'):
     return transform_mat
 
 
-def inverse_warp(img, depth, pose, intrinsics, rotation_mode='euler', padding_mode='zeros'):
+def inverse_warp(img, depth, pose, intrinsics, mode='bilinear', rotation_mode='euler', padding_mode='zeros'):
     """
     Inverse warp a source image to the target image plane.
 
@@ -165,7 +165,7 @@ def inverse_warp(img, depth, pose, intrinsics, rotation_mode='euler', padding_mo
         projected_img: Source image warped to the target image plane
         valid_points: Boolean array indicating point validity
     """
-    check_sizes(img, 'img', 'B3HW')
+    #check_sizes(img, 'img', 'B3HW')
     check_sizes(depth, 'depth', 'BHW')
     #check_sizes(pose, 'pose', 'B6')
     check_sizes(intrinsics, 'intrinsics', 'B33')
@@ -184,8 +184,169 @@ def inverse_warp(img, depth, pose, intrinsics, rotation_mode='euler', padding_mo
 
     rot, tr = proj_cam_to_src_pixel[:,:,:3], proj_cam_to_src_pixel[:,:,-1:]
     src_pixel_coords = cam2pixel(cam_coords, rot, tr, padding_mode)  # [B,H,W,2]
-    projected_img = F.grid_sample(img, src_pixel_coords, padding_mode=padding_mode)
+    projected_img = F.grid_sample(img, src_pixel_coords, padding_mode=padding_mode, mode=mode)
 
     valid_points = src_pixel_coords.abs().max(dim=-1)[0] <= 1
 
     return projected_img, valid_points
+
+def transform_dmap(depth_img, pose, intrinsics):
+    # Extract Params
+    fx = intrinsics[0,0] # Hack to make it look better?
+    cx = intrinsics[0,2]
+    fy = intrinsics[1,1]
+    cy = intrinsics[1,2]
+    sstring = str(depth_img.shape).replace(' ','-').replace('(','').replace(')','')
+
+    # Create constant for X field and Y field (We should do this outside once)
+    try:
+        xyfields = torch.load(sstring + "xyfields.pt").cuda()
+        pixelfields = torch.load(sstring + "pixelfields.pt").cuda()
+    except:
+        xyfields = torch.zeros((2, depth_img.shape[0], depth_img.shape[1])).float()
+        for v in range(0, xyfields.shape[1]):
+            for u in range(0, xyfields.shape[2]):
+                xyfields[0, v, u] = (float(u)-cx)/fx
+                xyfields[1, v, u] = (float(v)-cy)/fy
+        torch.save(xyfields, sstring + "xyfields.pt")
+        pixelfields = torch.zeros((1,depth_img.shape[0], depth_img.shape[1], 2)).float()
+        for r in range(0, depth_img.shape[0]):
+            for c in range(0, depth_img.shape[1]):
+                pixelfields[0,r,c,0] = c
+                pixelfields[0,r,c,1] = r
+        torch.save(pixelfields, sstring + "pixelfields.pt")
+        print("Saved: " + str(sstring))
+        xyfields = xyfields.cuda()
+        pixelfields = pixelfields.cuda()
+
+    # Generate Cloud
+    depth_img = depth_img.clamp(min=1e-3)
+    X = torch.mul(xyfields[0,:,:], depth_img)
+    Y = torch.mul(xyfields[1,:,:], depth_img)
+    Z = depth_img
+    ptcloud = torch.cat([X.unsqueeze(0),Y.unsqueeze(0),Z.unsqueeze(0)], 0)
+    ptcloud = ptcloud.view((3, ptcloud.shape[1]*ptcloud.shape[2]))
+    ptcloud = torch.cat([ptcloud, torch.ones((1, ptcloud.shape[1])).cuda()])
+
+    # Transform cloud
+    ptcloud = torch.matmul(pose, ptcloud)
+
+    # Reshape
+    ptcloud = ptcloud.reshape((4, depth_img.shape[0], depth_img.shape[1]))
+    return ptcloud[2,:,:]
+
+# def transform_dmap(depth_img, rgb_img, pose, intrinsics, mask):
+#
+#     # First we need to take src_depth_img (right), and transform into Z Map in left_camera frame
+#
+#     # Extract Params
+#     fx = intrinsics[0,0] # Hack to make it look better?
+#     cx = intrinsics[0,2]
+#     fy = intrinsics[1,1]
+#     cy = intrinsics[1,2]
+#     sstring = str(depth_img.shape).replace(' ','-').replace('(','').replace(')','')
+#
+#     # Create constant for X field and Y field (We should do this outside once)
+#     try:
+#         xyfields = torch.load(sstring + "xyfields.pt")
+#         pixelfields = torch.load(sstring + "pixelfields.pt")
+#     except:
+#         xyfields = torch.zeros((2, depth_img.shape[0], depth_img.shape[1])).float()
+#         for v in range(0, xyfields.shape[1]):
+#             for u in range(0, xyfields.shape[2]):
+#                 xyfields[0, v, u] = (float(u)-cx)/fx
+#                 xyfields[1, v, u] = (float(v)-cy)/fy
+#         torch.save(xyfields, sstring + "xyfields.pt")
+#         pixelfields = torch.zeros((1,depth_img.shape[0], depth_img.shape[1], 2)).float()
+#         for r in range(0, depth_img.shape[0]):
+#             for c in range(0, depth_img.shape[1]):
+#                 pixelfields[0,r,c,0] = c
+#                 pixelfields[0,r,c,1] = r
+#         torch.save(pixelfields, sstring + "pixelfields.pt")
+#         print("Saved: " + str(sstring))
+#
+#     # Generate Cloud
+#     depth_img = depth_img.clamp(min=1e-3)
+#     X = torch.mul(xyfields[0,:,:], depth_img)
+#     Y = torch.mul(xyfields[1,:,:], depth_img)
+#     Z = depth_img
+#     ptcloud = torch.cat([X.unsqueeze(0),Y.unsqueeze(0),Z.unsqueeze(0)], 0)
+#     ptcloud = ptcloud.view((3, ptcloud.shape[1]*ptcloud.shape[2]))
+#     ptcloud = torch.cat([ptcloud, torch.ones((1, ptcloud.shape[1]))])
+#
+#     # Transform cloud
+#     ptcloud = torch.matmul(pose, ptcloud)
+#
+#     # Generate Pixel Positions
+#     upix = ((ptcloud[0,:]*fx)/ptcloud[2,:] + cx).view(depth_img.shape[0], depth_img.shape[1])
+#     vpix = ((ptcloud[1,:]*fy)/ptcloud[2,:] + cy).view(depth_img.shape[0], depth_img.shape[1])
+#
+#     # Create Flow Field (Need to mask here somehow)
+#     newpixelfields = torch.cat([upix.unsqueeze(0).unsqueeze(-1), vpix.unsqueeze(0).unsqueeze(-1)], dim=3)
+#     flowfield = pixelfields - newpixelfields
+#     #flowfield[0,:,:,0] *= mask.squeeze(0)
+#     #flowfield[0,:,:,1] *= mask.squeeze(0)
+#
+#
+#     ###########
+#     #
+#     # # Manually Compute (Works until here. flowfield works)
+#     # newdepth = torch.zeros(depth_img.shape)
+#     # for r in range(0, depth_img.shape[0]):
+#     #     for c in range(0, depth_img.shape[1]):
+#     #         # u = int(upix[r,c])
+#     #         # v = int(vpix[r,c])
+#     #         # if u >=0 and u<depth_img.shape[1] and v >=0 and v < depth_img.shape[0]:
+#     #         #     newdepth[v,u] = depth_img[r,c]
+#     #
+#     #         u = int(c - flowfield[0, r, c, 0])
+#     #         v = int(r - flowfield[0, r, c, 1])
+#     #         if u >=0 and u<depth_img.shape[1] and v >=0 and v < depth_img.shape[0]:
+#     #             newdepth[v, u] = depth_img[r, c]
+#     #
+#     # return newdepth.unsqueeze(0)
+#
+#     # # Manually Compute (Works until here. flowfield works)
+#     # newrgb = torch.zeros(rgb_img.shape)
+#     # for r in range(0, rgb_img.shape[1]):
+#     #     for c in range(0, rgb_img.shape[2]):
+#     #         # u = int(upix[r,c])
+#     #         # v = int(vpix[r,c])
+#     #         # if u >=0 and u<depth_img.shape[1] and v >=0 and v < depth_img.shape[0]:
+#     #         #     newrgb[:,v,u] = rgb_img[:,r,c]
+#     #
+#     #         u = int(c - flowfield[0, 0, r, c])
+#     #         v = int(r - flowfield[0, 1, r, c])
+#     #         if u >=0 and u<depth_img.shape[1] and v >=0 and v < depth_img.shape[0]:
+#     #             newrgb[:, v, u] = rgb_img[:, r, c]
+#     #
+#     # #newrgb *= mask
+#     # return newrgb.unsqueeze(0)
+#
+#     ##################
+#
+#     # Create grid sampler
+#     flowfield = flowfield.permute(0, 3, 1, 2)
+#     tensorFlow = flowfield
+#     torchHorizontal = torch.linspace(-1.0, 1.0, tensorFlow.size(3)).view(1, 1, 1, tensorFlow.size(3)).expand(
+#         tensorFlow.size(0), 1, tensorFlow.size(2), tensorFlow.size(3))
+#     torchVertical = torch.linspace(-1.0, 1.0, tensorFlow.size(2)).view(1, 1, tensorFlow.size(2), 1).expand(
+#         tensorFlow.size(0), 1, tensorFlow.size(2), tensorFlow.size(3))
+#     tensorGrid = torch.cat([torchHorizontal, torchVertical], 1)
+#     tensorFlow = torch.cat([tensorFlow[:, 0:1, :, :] / ((depth_img.shape[1] - 1.0) / 2.0),
+#                             tensorFlow[:, 1:2, :, :] / ((depth_img.shape[0] - 1.0) / 2.0)], 1)
+#     flowfield = (tensorGrid + tensorFlow).permute(0, 2, 3, 1)
+#
+#     # ystep = 2. / float(depth_img.shape[0] - 1)
+#     # xstep = 2. / float(depth_img.shape[1] - 1)
+#     # print(xstep, ystep)
+#     # flowfield[0, :, :, 0] = -1 + pixelfields[0, :, :, 0] * xstep + flowfield[0, :, :, 0]*(1.5/float(depth_img.shape[1])) * 1
+#     # flowfield[0, :, :, 1] = -1 + pixelfields[0, :, :, 1] * ystep + flowfield[0, :, :, 1]*(1.5/float(depth_img.shape[0])) * 1
+#
+#     # Grid sample
+#     new_depth_img = F.grid_sample(depth_img.unsqueeze(0).unsqueeze(0), flowfield).squeeze(0)
+#
+#     # Mask
+#     new_depth_img *= mask
+#
+#     return new_depth_img

@@ -80,6 +80,30 @@ def tocloud(depth, rgb, intr, extr=None, rgbr=None):
     all_together = hack(all_together)
     return all_together
 
+def depth_consistency_loss(src_depth_img, target_depth_img, src_depth_mask, target_depth_mask, pose_target2src, intr):
+    # Transform (Below needed only if baseline z changes or big trans)
+    src_depth_img_trans = iv.transform_dmap(src_depth_img[0, 0, :, :], torch.inverse(pose_target2src), intr[0, :, :])
+    src_depth_img_trans = (src_depth_img_trans.unsqueeze(0) * src_depth_mask.float()).unsqueeze(0)
+    target_warped_depth_img, valid_points = iv.inverse_warp(src_depth_img_trans, target_depth_img.squeeze(0), pose_target2src, intr, 'nearest')
+
+    # Mask (Should just be doing top half and valid_points)
+    warp_mask = target_warped_depth_img > 0.
+    tophalf = torch.ones(valid_points.shape).bool().cuda(); tophalf[:,0:tophalf.shape[1]/3,:] = False
+    full_mask = valid_points & tophalf & warp_mask # We should not need target_depth_mask
+    full_mask = full_mask.float()
+    target_depth_img = target_depth_img * full_mask
+    target_warped_depth_img = target_warped_depth_img * full_mask
+
+    # Score
+    target_depth_img = target_depth_img.clamp(min=1e-3)
+    target_warped_depth_img = target_warped_depth_img.clamp(min=1e-3)
+    diff_depth = ((target_depth_img - target_warped_depth_img).abs() /
+                  (target_depth_img + target_warped_depth_img).abs()).clamp(0, 1)
+    dc_loss = util.mean_on_mask(diff_depth, full_mask)
+    #diff_depth = (target_depth_img - target_warped_depth_img).abs()
+    #reconstruction_loss = util.mean_on_mask(diff_depth, full_mask)
+    return dc_loss
+
 def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     ref_dats_in = local_info_valid['ref_dats']
     src_dats_in = local_info_valid['src_dats']
@@ -115,7 +139,7 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
     src_rgb_img = torch.unsqueeze(src_rgb_img, 0)
 
     target_depth_map = src_dats_in[batch_num][target_frame]["left_camera"]["dmap_imgsize"]
-    depth_mask = target_depth_map > 0.;
+    target_depth_mask = target_depth_map > 0.;
     src_depth_map = src_dats_in[batch_num][target_frame]["right_camera"]["dmap_imgsize"]
     src_depth_mask = src_depth_map > 0.;
     #depth_mask = depth_mask.float()
@@ -133,21 +157,33 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
 
     #### RGB MODE ####
 
-    # target_warped_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
+    # # Warp
+    # target_warped_rgb_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
     #
-    # full_mask = depth_mask & valid_points
+    # # Mask (Should just be doing top half and valid_points)
+    # tophalf = torch.ones(valid_points.shape).bool(); tophalf[:,0:tophalf.shape[1]/2-50,:] = False
+    # full_mask = target_depth_mask & valid_points & tophalf # Check if error is larger if i remove one of these
     # full_mask = full_mask.float()
+    # target_rgb_img = target_rgb_img * full_mask
+    # target_warped_rgb_img = target_warped_rgb_img * full_mask
     #
-    # target_rgb_img = target_rgb_img * full_mask.float()
+    # # Integrate loss here too and visualize for changing pose
+    # #target_rgb_img = target_rgb_img*0 + 1
+    # #target_warped_rgb_img = target_warped_rgb_img*0
+    # diff_img = (target_rgb_img - target_warped_rgb_img).abs() # [1, 3, 256, 384]
+    # ssim_map = (0.5 * (1 - util.ssim(target_rgb_img, target_warped_rgb_img))).clamp(0, 1)
+    # diff_img = (0.15 * diff_img + 0.85 * ssim_map)
+    # photo_error = util.mean_on_mask(diff_img, full_mask) # Mul by 10?
+    # print(photo_error)
     #
     # # Visualize RGB Image
     # src_rgb_img = cv2.cvtColor(src_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
     # target_rgb_img = cv2.cvtColor(target_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # target_warped_img = cv2.cvtColor(target_warped_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # target_warped_rgb_img = cv2.cvtColor(target_warped_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+    # loss_diff_img = cv2.cvtColor(diff_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
     # #comb = target_rgb_img * 0.5 + target_warped_img * 0.5
-    # comb = np.abs(target_rgb_img - target_warped_img)
-    # fimage = np.vstack((target_rgb_img, target_warped_img, comb))
-    #
+    # comb = np.abs(target_rgb_img - target_warped_rgb_img)**2
+    # fimage = np.vstack((target_rgb_img, target_warped_rgb_img, comb, loss_diff_img))
     # cv2.namedWindow("fimage")
     # cv2.moveWindow("fimage", 2500, 50)
     # cv2.imshow("fimage", fimage)
@@ -156,99 +192,60 @@ def viz_debug(local_info_valid, visualizer, d_candi, d_candi_up):
 
     #### DEPTH MODE ####
 
-
-
     src_depth_img = src_dats_in[batch_num][src_frame]["right_camera"]["dmap_imgsize"][0, :, :].unsqueeze(0).unsqueeze(0)
     target_depth_img = src_dats_in[batch_num][src_frame]["left_camera"]["dmap_imgsize"][0, :, :].unsqueeze(0).unsqueeze(0)
 
-    #T_left2right = torch.eye(4)
-    #pose_target2src = T_left2right.unsqueeze(0)
+    # Pose
+    #T_left2right = torch.inverse(T_left2right)
+    pose_target2src = T_left2right
+    pose_target2src = torch.unsqueeze(pose_target2src, 0)
 
-    # ## Hack
-    # faggot = iv.transform_dmap(src_depth_img[0, 0, :, :], src_rgb_img[0, :, :, :],
-    #                                                   torch.inverse(T_left2right), intr[0, :, :],
-    #                                                   src_depth_mask.float())
-    #
-    # # faggot = iv.transform_dmap(target_depth_img[0, 0, :, :], target_rgb_img[0, :, :, :],
-    # #                                                   T_left2right, intr[0, :, :],
-    # #                                                   depth_mask.float())
-    #
-    # target_warped_rgb_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
-    # target_warped_rgb_img *= depth_mask.float()
-    # target_warped_rgb_img = cv2.cvtColor(target_warped_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0),
-    #                                      cv2.COLOR_BGR2RGB)
-    #
-    #
-    # faggot = cv2.cvtColor(faggot[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # fimage = np.vstack((faggot, target_warped_rgb_img, np.abs(faggot*0.5 + target_warped_rgb_img*0.5)))
-    # cv2.namedWindow("fimage")
-    # cv2.moveWindow("fimage", 2500, 50)
-    # cv2.imshow("fimage", fimage)
-    # cv2.waitKey(0)
-    # print(faggot.shape)
-    # stop
+    dc_loss = depth_consistency_loss(src_depth_img, target_depth_img, src_depth_mask, target_depth_mask, pose_target2src, intr)
+    print(dc_loss)
 
-    # src_warped_depth_img = iv.transform_dmap(target_depth_img[0, 0, :, :], target_rgb_img[0, :, :, :],
-    #                                                   T_left2right, intr[0, :, :],
-    #                                                   depth_mask.float())
+    # Transform (Below needed only if baseline z changes or big trans)
+    src_depth_img_trans = iv.transform_dmap(src_depth_img[0, 0, :, :], torch.inverse(T_left2right), intr[0, :, :])
+    src_depth_img_trans = (src_depth_img_trans.unsqueeze(0) * src_depth_mask.float()).unsqueeze(0)
+    target_warped_depth_img, valid_points = iv.inverse_warp(src_depth_img_trans, target_depth_map, pose_target2src, intr, 'nearest')
 
+    # Mask (Should just be doing top half and valid_points)
+    warp_mask = target_warped_depth_img > 0.
+    tophalf = torch.ones(valid_points.shape).bool(); tophalf[:,0:tophalf.shape[1]/3,:] = False
+    full_mask = valid_points & tophalf & warp_mask # We should not need target_depth_mask
+    full_mask = full_mask.float()
+    target_depth_img = target_depth_img * full_mask
+    target_warped_depth_img = target_warped_depth_img * full_mask
 
-    target_warped_depth_img = iv.transform_dmap(src_depth_img[0, 0, :, :], src_rgb_img[0, :, :, :],
-                                                      torch.inverse(T_left2right), intr[0, :, :],
-                                                      src_depth_mask.float())
-
-
-
-    target_warped_depth_img2, valid_points = iv.inverse_warp(src_depth_img, target_depth_map, pose_target2src, intr, 'nearest')
-    target_warped_depth_img2 = target_warped_depth_img2.squeeze(0)
-
-    print(target_warped_depth_img2.shape)
-
-
-    # # Warp RGB
-    # target_warped_rgb_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
-    #
-    # #T_left2right = torch.eye(4)
-    #
-    # # Warp Depth
-    # pose_target2src = T_left2right.unsqueeze(0)
-    # src_depth_img_corrected, hack = iv.transform_dmap(src_depth_img[0,0,:,:], src_rgb_img[0,:,:,:], torch.inverse(T_left2right), intr[0,:,:], src_depth_mask.float())
-    # target_warped_depth_img, valid_points = iv.inverse_warp(src_depth_img_corrected.unsqueeze(0).unsqueeze(0), target_depth_map, pose_target2src, intr)
-    #
-    # print(hack.shape)
-    #
-    # # Apply Mask
-    # full_mask = depth_mask & valid_points
-    # full_mask = full_mask.float()
-    # target_depth_img = target_depth_img * full_mask.float()
-    # target_rgb_img = target_rgb_img * full_mask.float()
-
-    a = tocloud(target_warped_depth_img2, target_rgb_img[0,:,:,:], intr[0,:,:], None)
-    visualizer.addCloud(a, 1)
-    #b = tocloud(target_warped_depth_img, target_rgb_img[0,:,:,:], intr[0,:,:], None)
-    #visualizer.addCloud(b, 2)
+    # Cloud Viz
+    diffx = (target_depth_img - target_warped_depth_img).abs().squeeze(0)
+    x = tocloud(diffx, target_rgb_img[0, :, :, :], intr[0, :, :], None)
+    visualizer.addCloud(x, 2)
+    # a = tocloud(target_depth_img.squeeze(0), target_rgb_img[0,:,:,:], intr[0,:,:], None)
+    # visualizer.addCloud(a, 1)
+    # b = tocloud(target_warped_depth_img.squeeze(0), target_rgb_img[0,:,:,:], intr[0,:,:], None)
+    # visualizer.addCloud(b, 2)
     visualizer.swapBuffer()
-    while 1: time.sleep(1)
+    # while 1: time.sleep(1)
 
-    # # Visualize RGB
-    # src_rgb_img = cv2.cvtColor(src_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # target_rgb_img = cv2.cvtColor(target_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # target_warped_rgb_img = cv2.cvtColor(target_warped_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # #comb = target_rgb_img * 0.5 + target_warped_img * 0.5
-    # comb = np.abs(target_rgb_img - target_warped_rgb_img)
-    # fimage = np.vstack((target_rgb_img, target_warped_rgb_img, comb))
-    # cv2.namedWindow("fimage")
-    # cv2.moveWindow("fimage", 2500, 50)
-    # cv2.imshow("fimage", fimage)
-    # cv2.waitKey(0)
-    # stop
+    # Score
+    target_depth_img = target_depth_img.clamp(min=1e-3)
+    target_warped_depth_img = target_warped_depth_img.clamp(min=1e-3)
+    diff_depth = ((target_depth_img - target_warped_depth_img).abs() /
+                  (target_depth_img + target_warped_depth_img).abs()).clamp(0, 1)
+    #diff_depth[torch.isnan(diff_depth)] = 0
+    reconstruction_loss = util.mean_on_mask(diff_depth, full_mask)
+
+    #diff_depth = (target_depth_img - target_warped_depth_img).abs()
+    #reconstruction_loss = util.mean_on_mask(diff_depth, full_mask)
+    print(reconstruction_loss)
 
     # Visualize Depth
     target_depth_img = target_depth_img[0,0,:,:].numpy()/100.
     target_warped_depth_img = target_warped_depth_img[0,0,:,:].numpy()/100.
-    diff = np.abs(target_warped_depth_img - target_depth_img)
+    diff_img = diff_depth[0,0,:,:].numpy()/100.
+    #diff = np.abs(target_warped_depth_img - target_depth_img)
     #diff = target_depth_img * 0.5 + target_warped_depth_img * 0.5
-    fimage = np.vstack((target_depth_img, target_warped_depth_img, diff))
+    fimage = np.vstack((target_depth_img, target_warped_depth_img, diff_img))
     cv2.namedWindow("fimage")
     cv2.moveWindow("fimage", 2500, 50)
     cv2.imshow("fimage", fimage)
@@ -454,6 +451,7 @@ def main():
     parser.add_argument('--pytorch_scaling', action='store_true', default=False,
                         help='pytorch scaling for data (False)')
     parser.add_argument('--softce', type=float, default=0., help='If soft cross entropy is wanted')
+    parser.add_argument('--dsc_mul', type=float, default=0., help='Depth Consistency Loss Multiplier')
 
     #hack_num = 326
     hack_num = 0
@@ -463,6 +461,7 @@ def main():
 
     # Arguments Parsing
     args = parser.parse_args()
+    dsc_mul = args.dsc_mul
     softce = args.softce
     lc = args.lc
     pytorch_scaling = args.pytorch_scaling
@@ -622,7 +621,8 @@ def main():
 
     # Additional Params
     addparams = {
-        "softce": softce
+        "softce": softce,
+        "dsc_mul": dsc_mul
     }
 
     # Evaluate Model Graph
@@ -878,7 +878,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             local_info_valid = batch_loader.get_valid_items(local_info)
             local_info_valid["d_candi"] = d_candi
 
-            viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+            # viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
             # print("---")
             # continue
 
@@ -1036,6 +1036,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter):
     # Readout AddParams
     d_candi = local_info_valid["d_candi"]
     softce = addparams["softce"]
+    dsc_mul = addparams["dsc_mul"]
 
     # Create inputs
     model_input_left, gt_input_left = generate_model_input(local_info_valid, "left", softce)
@@ -1046,22 +1047,22 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter):
     BV_cur_right, BV_cur_refined_right = torch.nn.parallel.data_parallel(model, model_input_right, range(ngpu))  # [B,128,64,96] [B,128,256,384]
 
     # NLL Loss
-    loss = 0
+    ce_loss = 0
     for ibatch in range(BV_cur_left.shape[0]):
         if not softce:
             # Left Losses
-            loss = loss + F.nll_loss(BV_cur_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
-            loss = loss + F.nll_loss(BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
+            ce_loss = ce_loss + F.nll_loss(BV_cur_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
+            ce_loss = ce_loss + F.nll_loss(BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), gt_input_left["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
             # Right Losses
-            loss = loss + F.nll_loss(BV_cur_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
-            loss = loss + F.nll_loss(BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
+            ce_loss = ce_loss + F.nll_loss(BV_cur_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
+            ce_loss = ce_loss + F.nll_loss(BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), gt_input_right["dmap_imgsize_digits"][ibatch,:,:].unsqueeze(0), ignore_index=0)
         else:
             # Left Losses
-            loss = loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels"][ibatch].unsqueeze(0), BV_cur_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks"][ibatch,:,:,:], BV_log=True)
-            loss = loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks_imgsizes"][ibatch,:,:,:], BV_log=True)
+            ce_loss = ce_loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels"][ibatch].unsqueeze(0), BV_cur_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks"][ibatch,:,:,:], BV_log=True)
+            ce_loss = ce_loss + util.soft_cross_entropy_loss(gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_left[ibatch,:,:,:].unsqueeze(0), mask=gt_input_left["masks_imgsizes"][ibatch,:,:,:], BV_log=True)
             # Right Losses
-            loss = loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels"][ibatch].unsqueeze(0), BV_cur_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks"][ibatch,:,:,:], BV_log=True)
-            loss = loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks_imgsizes"][ibatch,:,:,:], BV_log=True)
+            ce_loss = ce_loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels"][ibatch].unsqueeze(0), BV_cur_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks"][ibatch,:,:,:], BV_log=True)
+            ce_loss = ce_loss + util.soft_cross_entropy_loss(gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0), BV_cur_refined_right[ibatch,:,:,:].unsqueeze(0), mask=gt_input_right["masks_imgsizes"][ibatch,:,:,:], BV_log=True)
 
     # Regress all depthmaps once here
     small_dm_left_arr = []
@@ -1074,117 +1075,51 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter):
         small_dm_right_arr.append(util.dpv_to_depthmap(BV_cur_right[ibatch, :, :, :].unsqueeze(0), d_candi, BV_log=True))
         large_dm_right_arr.append(util.dpv_to_depthmap(BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0), d_candi, BV_log=True))
 
-    # Downsample Consistency Loss (Should we even have a mask here?)
-    dcloss = 0
-    for ibatch in range(BV_cur_left.shape[0]):
-        # Left
-        mask_left = gt_input_left["masks"][ibatch,:,:,:]
-        small_dm_left = small_dm_left_arr[ibatch]
-        large_dm_left = large_dm_left_arr[ibatch]
-        downscaled_dm_left = F.interpolate(large_dm_left.unsqueeze(0), size=[small_dm_left.shape[1], small_dm_left.shape[2]], mode='nearest').squeeze(0)
-        #uloss = uloss + (((small_dm_left - downscaled_dm_left).abs() / (small_dm_left + downscaled_dm_left).abs()).clamp(0, 1) * mask_left).sum() / mask_left.sum()
-        dcloss = dcloss + torch.mean(((small_dm_left - downscaled_dm_left).abs() / (small_dm_left + downscaled_dm_left).abs()).clamp(0, 1))
-        # Right
-        mask_right = gt_input_right["masks"][ibatch,:,:,:]
-        small_dm_right = small_dm_right_arr[ibatch]
-        large_dm_right = large_dm_right_arr[ibatch]
-        downscaled_dm_right = F.interpolate(large_dm_right.unsqueeze(0), size=[small_dm_right.shape[1], small_dm_right.shape[2]], mode='nearest').squeeze(0)
-        #uloss = uloss + (((small_dm_right - downscaled_dm_right).abs() / (small_dm_right + downscaled_dm_right).abs()).clamp(0, 1) * mask_right).sum() / mask_right.sum()
-        dcloss = dcloss + torch.mean(((small_dm_right - downscaled_dm_right).abs() / (small_dm_right + downscaled_dm_right).abs()).clamp(0, 1))
+    # # Downsample Consistency Loss (Should we even have a mask here?)
+    # dcloss = 0
+    # for ibatch in range(BV_cur_left.shape[0]):
+    #     # Left
+    #     mask_left = gt_input_left["masks"][ibatch,:,:,:]
+    #     small_dm_left = small_dm_left_arr[ibatch]
+    #     large_dm_left = large_dm_left_arr[ibatch]
+    #     downscaled_dm_left = F.interpolate(large_dm_left.unsqueeze(0), size=[small_dm_left.shape[1], small_dm_left.shape[2]], mode='nearest').squeeze(0)
+    #     #uloss = uloss + (((small_dm_left - downscaled_dm_left).abs() / (small_dm_left + downscaled_dm_left).abs()).clamp(0, 1) * mask_left).sum() / mask_left.sum()
+    #     dcloss = dcloss + torch.mean(((small_dm_left - downscaled_dm_left).abs() / (small_dm_left + downscaled_dm_left).abs()).clamp(0, 1))
+    #     # Right
+    #     mask_right = gt_input_right["masks"][ibatch,:,:,:]
+    #     small_dm_right = small_dm_right_arr[ibatch]
+    #     large_dm_right = large_dm_right_arr[ibatch]
+    #     downscaled_dm_right = F.interpolate(large_dm_right.unsqueeze(0), size=[small_dm_right.shape[1], small_dm_right.shape[2]], mode='nearest').squeeze(0)
+    #     #uloss = uloss + (((small_dm_right - downscaled_dm_right).abs() / (small_dm_right + downscaled_dm_right).abs()).clamp(0, 1) * mask_right).sum() / mask_right.sum()
+    #     dcloss = dcloss + torch.mean(((small_dm_right - downscaled_dm_right).abs() / (small_dm_right + downscaled_dm_right).abs()).clamp(0, 1))
 
     # Depth Stereo Consistency Loss
     T_left2right = local_info_valid["T_left2right"]
     pose_target2src = T_left2right
     pose_target2src = torch.unsqueeze(pose_target2src, 0).cuda()
-    dscloss = 0
+    pose_src2target = torch.inverse(T_left2right)
+    pose_src2target = torch.unsqueeze(pose_src2target, 0).cuda()
+    dsc_loss = 0
     for ibatch in range(BV_cur_left.shape[0]):
-        # Go from Right camera to left camera. We assume left and right intrinsics are the same cos rectified
-        # Get Intrinsics
+        # Get all Data
         intr_up_left = model_input_left["intrinsics_up"][ibatch,:,:].unsqueeze(0)
         intr_left = model_input_left["intrinsics"][ibatch, :, :].unsqueeze(0)
         intr_up_right = model_input_right["intrinsics_up"][ibatch, :, :].unsqueeze(0)
         intr_right = model_input_right["intrinsics"][ibatch, :, :].unsqueeze(0)
-        # Warp
-        src_img = large_dm_right_arr[ibatch].unsqueeze(0)
-        target_img = large_dm_left_arr[ibatch].unsqueeze(0)
-        target_depth_map = large_dm_left_arr[ibatch]
-        target_warped_img, valid_points = iv.inverse_warp(src_img, target_depth_map, pose_target2src, intr_up_left) # WRONG
-
-
-
-        target_warped_img = target_warped_img.squeeze(0)
-        valid_points = valid_points.float()
-        dscloss = dscloss + (((target_warped_img - target_img).abs() / (target_warped_img + target_img).abs()).clamp(0, 1) * valid_points).sum() / valid_points.sum()
-
-    print(dscloss)
-
-
-    # [2,5,4,4]
-
-    """
-    Stereo Warp (WE ASSUME LEFT AND RIGHT INTRINSICS ARE THE SAME)
-    """
-
-    # batch_num = 1
-    # src_frame = 3
-    # target_frame = src_frame  # FIXED
-    #
-    # target_rgb_img = src_dats_in[batch_num][target_frame]["left_camera"]["img"][0, :, :, :]
-    # target_rgb_img[0, :, :] = target_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + \
-    #                           kitti.__imagenet_stats["mean"][0]
-    # target_rgb_img[1, :, :] = target_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + \
-    #                           kitti.__imagenet_stats["mean"][1]
-    # target_rgb_img[2, :, :] = target_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + \
-    #                           kitti.__imagenet_stats["mean"][2]
-    # target_rgb_img = torch.unsqueeze(target_rgb_img, 0)
-    #
-    # src_rgb_img = src_dats_in[batch_num][src_frame]["right_camera"]["img"][0, :, :, :]
-    # src_rgb_img[0, :, :] = src_rgb_img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
-    # src_rgb_img[1, :, :] = src_rgb_img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
-    # src_rgb_img[2, :, :] = src_rgb_img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
-    # src_rgb_img = torch.unsqueeze(src_rgb_img, 0)
-    #
-    # target_depth_map = src_dats_in[batch_num][target_frame]["left_camera"]["dmap_imgsize"]
-    # depth_mask = target_depth_map > 0.;
-    # #depth_mask = depth_mask.float()
-    #
-    # pose_target2src = T_left2right
-    # # pose_target2src = torch.inverse(pose_target2src)
-    # pose_target2src = torch.unsqueeze(pose_target2src, 0)
-    #
-    # intr = left_cam_intrin_in[batch_num]["intrinsic_M"] * 4;
-    # #intr[0,0] *= 2;
-    # intr[2, 2] = 1;
-    # intr = intr[0:3, 0:3]
-    # intr = torch.tensor(intr.astype(np.float32))
-    # intr = torch.unsqueeze(intr, 0)
-    #
-    # target_warped_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)
-    #
-    # full_mask = depth_mask & valid_points
-    # full_mask = full_mask.float()
-    #
-    # target_rgb_img = target_rgb_img * full_mask.float()
-    #
-    # # Visualize RGB Image
-    # src_rgb_img = cv2.cvtColor(src_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # target_rgb_img = cv2.cvtColor(target_rgb_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # target_warped_img = cv2.cvtColor(target_warped_img[0, :, :, :].numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
-    # #comb = target_rgb_img * 0.5 + target_warped_img * 0.5
-    # comb = np.power(target_rgb_img - target_warped_img, 2)
-    #
-    # #fimage = np.vstack((target_rgb_img, src_rgb_img))
-    # fimage = np.vstack((target_rgb_img, target_warped_img, comb))
-    #
-    # print(target_rgb_img.shape)
-    # print(intr)
-    #
-    # cv2.namedWindow("fimage")
-    # cv2.moveWindow("fimage", 2500, 50)
-    # cv2.imshow("fimage", fimage)
-    # cv2.waitKey(0)
-    # stop
-
+        depth_up_left = large_dm_left_arr[ibatch].unsqueeze(0)
+        depth_left = small_dm_left_arr[ibatch].unsqueeze(0)
+        depth_up_right = large_dm_right_arr[ibatch].unsqueeze(0)
+        depth_right = small_dm_right_arr[ibatch].unsqueeze(0)
+        mask_up_left = gt_input_left["masks_imgsizes"][ibatch,:,:,:]
+        mask_left = gt_input_left["masks"][ibatch,:,:,:]
+        mask_up_right = gt_input_right["masks_imgsizes"][ibatch,:,:,:]
+        mask_right = gt_input_right["masks"][ibatch,:,:,:]
+        # Right to Left
+        dsc_loss = dsc_loss + depth_consistency_loss(depth_up_right, depth_up_left, mask_up_right, mask_up_left, pose_target2src, intr_up_left)
+        dsc_loss = dsc_loss + depth_consistency_loss(depth_right, depth_left, mask_right, mask_left, pose_target2src, intr_left)
+        # Left to Right
+        dsc_loss = dsc_loss + depth_consistency_loss(depth_up_left, depth_up_right, mask_up_left, mask_up_right, pose_src2target, intr_up_right)
+        dsc_loss = dsc_loss + depth_consistency_loss(depth_left, depth_right, mask_left, mask_right, pose_src2target, intr_right)
 
     # What if we convert the DPV to a depth map, and regress that too?
 
@@ -1193,9 +1128,11 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter):
     # Demonstrate light curtain on KITTI dataset
 
     # Backward
-    bsize = BV_cur_left.shape[0]*2
+    bsize = torch.tensor(float(BV_cur_left.shape[0]*2)).cuda()
     optimizer_KV.zero_grad()
-    loss = loss / torch.tensor(float(bsize)).cuda(loss.get_device()) # SHOULD BE DIVIDED BY BATCH SIZE!
+    ce_loss = (ce_loss / bsize) * 1.
+    dsc_loss = (dsc_loss / bsize) * dsc_mul
+    loss = ce_loss + dsc_loss
     loss.backward()
     optimizer_KV.step()
 
@@ -1228,7 +1165,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter):
         cv2.waitKey(15)
 
     # Return
-    return {"loss": loss.detach().cpu().numpy()}
+    return {"loss": ce_loss.detach().cpu().numpy()}
 
 
 class BatchSchedulerMP:
