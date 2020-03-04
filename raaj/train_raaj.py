@@ -303,6 +303,18 @@ def main():
                 all_files.append(os.path.join(subdir, file))
         all_files = natural_sort(all_files)
         model_KVnet.eval()
+        foutput = {
+            "name": exp_name,
+            "command": ' '.join(sys.argv[1:]),
+            "test_interval": 5000,
+            "rmse": [],
+            "rmse_low": [],
+            "sil": [],
+            "sil_low": [],
+            "rsc": [],
+            "smooth": [],
+            "dc": []
+        }
         rmses = [];
         rmses_low = [];
         sils = [];
@@ -310,22 +322,25 @@ def main():
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
-            results, results_low = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, addparams, None, None)
-            rmses.append(results["rmse"][0]);
-            rmses_low.append(results_low["rmse"][0]);
-            sils.append(results["scale invariant log"][0]);
-            sils_low.append(results_low["scale invariant log"][0])
+            results, results_low, rsc, smooth, dc = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, addparams, None, None)
+            foutput["rmse"].append(results["rmse"][0]);
+            foutput["rmse_low"].append(results_low["rmse"][0]);
+            foutput["sil"].append(results["scale invariant log"][0]);
+            foutput["sil_low"].append(results_low["scale invariant log"][0])
+            foutput["rsc"].append(float(rsc))
+            foutput["smooth"].append(float(smooth))
+            foutput["dc"].append(float(dc))
         print("RMSES")
-        print(rmses)
+        print(foutput["rmse"])
         print("SILS")
-        print(sils)
+        print(foutput["sil"])
         print("RMSES_low")
-        print(rmses_low)
+        print(foutput["rmse_low"])
         print("SILS_low")
-        print(sils_low)
-
-        # Write a code here to save a .json file
-
+        print(foutput["sil_low"])
+        import json
+        with open('outputs/saved_models/'+exp_name+'.json', 'w') as f:
+            json.dump(foutput, f)
         sys.exit()
 
     # Test
@@ -530,6 +545,10 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
     epsilon = sys.float_info.epsilon
     all_errors = []
     all_errors_low = []
+    rsc_sum = 0.
+    dc_sum = 0.
+    smooth_sum = 0.
+    counter = 0.
     start = time.time()
 
     # Cloud for distance
@@ -562,6 +581,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
             # Create input
             model_input, gt_input = generate_model_input(local_info_valid)
+            model_input_right, gt_input_right = generate_model_input(local_info_valid, "right")
 
             # Create LC output
             # def get_basic(self, baseline=0.2, laser_fov=80, intrinsics=[400., 0., 256, 0., 400., 256., 0., 0., 1.],
@@ -591,6 +611,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             # Batch
             start = time.time()
             bsize = BV_cur_refined_all.shape[0]
+            pose_target2src = local_info_valid["T_left2right"].unsqueeze(0).cuda()
             for b in range(bsize):
                 BV_cur = BV_cur_all[b, :, :, :].unsqueeze(0)
                 BV_cur_refined = BV_cur_refined_all[b, :, :, :].unsqueeze(0)
@@ -598,12 +619,22 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 depthmap_truth_low = depthmap_truth_low_all[b, :, :].unsqueeze(0)
                 depth_mask = depth_mask_all[b, :, :, :]
                 depth_mask_low = depth_mask_low_all[b, :, :, :]
+                intr = model_input["intrinsics_up"][b, :, :].unsqueeze(0)
+                left_rgb = model_input["rgb"][b,-1,:,:,:].unsqueeze(0)
+                right_rgb = model_input_right["rgb"][b, -1, :, :, :].unsqueeze(0)
 
                 # Predicted
                 dpv_low_predicted = BV_cur[0, :, :, :].unsqueeze(0).detach()
                 dpv_predicted = BV_cur_refined[0, :, :, :].unsqueeze(0).detach()
                 depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)  # [1,256,384]
                 depthmap_low_predicted = util.dpv_to_depthmap(dpv_low_predicted, d_candi, BV_log=True)  # [1,256,384]
+
+                # Losses
+                rsc_sum += losses.rgb_stereo_consistency_loss(right_rgb, left_rgb, depthmap_predicted,
+                                                                         pose_target2src, intr)
+                smooth_sum += losses.edge_aware_smoothness_loss([depthmap_predicted.unsqueeze(0)], left_rgb, 1)
+                dc_sum += losses.depth_consistency_loss(depthmap_predicted, depthmap_low_predicted)
+                counter += 1
 
                 # Generate Numpy
                 depthmap_predicted_np = (depthmap_predicted * depth_mask).squeeze(0).cpu().numpy()
@@ -685,8 +716,10 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
     results = dlib.evaluateErrors(all_errors)
     results_low = dlib.evaluateErrors(all_errors_low)
-    return results, results_low
-
+    rsc_sum /= counter
+    smooth_sum /= counter
+    dc_sum /= counter
+    return results, results_low, rsc_sum, smooth_sum, dc_sum
 
 def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, visualizer, lightcurtain):
     # start = time.time()
