@@ -556,7 +556,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             local_info_valid = batch_loader.get_valid_items(local_info)
             local_info_valid["d_candi"] = d_candi
 
-            viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+            #viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
             # print("---")
             # continue
 
