@@ -15,6 +15,8 @@ import warping.homography as warp_homo
 import torch
 import torch.nn.functional as F
 import torchvision
+import kitti
+import cv2
 
 def load_pretrained_model(model, pretrained_path, optimizer = None):
     r'''
@@ -40,45 +42,53 @@ def load_pretrained_model(model, pretrained_path, optimizer = None):
 
     return {"iter": pre_model_dict_info['iter']}
 
-def create_gaussian_window(window_size, channel):
-    def _gaussian(window_size, sigma):
-        gauss = torch.Tensor([math.exp(-(x - window_size//2)**2/float(2*sigma**2)) for x in range(window_size)])
-        return gauss/gauss.sum()
-    _1D_window = _gaussian(window_size, 1.5).unsqueeze(1)
-    _2D_window = torch.matmul(_1D_window, _1D_window.t()).float().unsqueeze(0).unsqueeze(0)
-    window = _2D_window.expand(
-        channel, 1, window_size, window_size).contiguous()
-    return window
+def powerf(d_min, d_max, nDepth, power):
+    f = lambda x: d_min + (d_max - d_min) * x
+    x = np.linspace(start=0, stop=1, num=nDepth)
+    x = np.power(x, power)
+    candi = [f(v) for v in x]
+    return np.array(candi)
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-device = torch.device("cpu")
-window_size = 5
-gaussian_img_kernel = create_gaussian_window(window_size, 3).float().to(device)
-def ssim(img1, img2):
-    params = {'weight': gaussian_img_kernel,
-              'groups': 3, 'padding': window_size//2}
-    mu1 = F.conv2d(img1, **params)
-    mu2 = F.conv2d(img2, **params)
+def hack(cloud):
+    fcloud = np.zeros(cloud.shape).astype(np.float32)
+    for i in range(0, cloud.shape[0]):
+        fcloud[i] = cloud[i]
+    return fcloud
 
-    mu1_sq = mu1.pow(2)
-    mu2_sq = mu2.pow(2)
-    mu1_mu2 = mu1*mu2
+def tocloud(depth, rgb, intr, extr=None, rgbr=None):
+    pts = depth_to_pts(depth, intr)
+    pts = pts.reshape((3, pts.shape[1] * pts.shape[2]))
+    # pts_numpy = pts.numpy()
 
-    sigma1_sq = F.conv2d(img1*img1, **params) - mu1_sq
-    sigma2_sq = F.conv2d(img2*img2, **params) - mu2_sq
-    sigma12 = F.conv2d(img1*img2, **params) - mu1_mu2
+    # Attempt to transform
+    pts = torch.cat([pts, torch.ones((1, pts.shape[1]))])
+    if extr is not None:
+        transform = torch.inverse(extr)
+        pts = torch.matmul(transform, pts)
+    pts_numpy = pts[0:3, :].numpy()
 
-    C1 = 0.01**2
-    C2 = 0.03**2
+    # Convert Color
+    pts_color = rgb.reshape((3, rgb.shape[1] * rgb.shape[2])) * 255
+    pts_normal = np.zeros((3, rgb.shape[1] * rgb.shape[2]))
 
-    ssim_map = ((2*mu1_mu2 + C1)*(2*sigma12 + C2)) / \
-        ((mu1_sq + mu2_sq + C1)*(sigma1_sq + sigma2_sq + C2))
-    return ssim_map
+    # RGBR
+    if rgbr is not None:
+        pts_color[0, :] = rgbr[0]
+        pts_color[1, :] = rgbr[1]
+        pts_color[2, :] = rgbr[2]
 
-def mean_on_mask(diff, valid_mask):
-    mask = valid_mask.expand_as(diff)
-    mean_value = (diff * mask).sum() / mask.sum()
-    return mean_value
+    # Visualize
+    all_together = np.concatenate([pts_numpy, pts_color, pts_normal], 0).astype(np.float32).T
+    all_together = hack(all_together)
+    return all_together
+
+def torchrgb_to_cv2(input, demean=True):
+    input = input.detach().clone()
+    if demean:
+        input[0, :, :] = input[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+        input[1, :, :] = input[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+        input[2, :, :] = input[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    return cv2.cvtColor(input[:, :, :].cpu().numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
 
 def gaussian_torch(x, mu, sig):
     return torch.exp(-torch.pow(x - mu, 2.) / (2 * np.power(sig, 2.)))
@@ -101,25 +111,6 @@ def gen_soft_label_torch(d_candi, depthmap, variance, zero_invalid=False):
     if zero_invalid: dists[dists != dists] = -1
 
     return dists
-
-def soft_cross_entropy_loss(soft_label, x, mask=None, BV_log=False, ):
-    if BV_log:
-        #x_softmax = torch.exp(x)
-        log_x_softmax = x
-    else:
-        x_softmax = F.softmax(x, dim=1)
-        log_x_softmax = torch.log(x_softmax)
-
-    loss = -torch.sum(soft_label * log_x_softmax, 1)
-
-    if mask is not None:
-        loss = loss * mask
-        nonzerocount = (mask == 1).sum()
-        if nonzerocount == 0: return 0.
-        loss = torch.sum(loss)/nonzerocount
-    else:
-        loss = torch.mean(loss)
-    return loss
 
 # Not diff
 def digitized_to_dpv(depth_digit, N):
