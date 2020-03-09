@@ -42,6 +42,14 @@ def load_pretrained_model(model, pretrained_path, optimizer = None):
 
     return {"iter": pre_model_dict_info['iter']}
 
+def intr_scale(intr, raw_img_size, img_size):
+    uchange = float(img_size[0]) / float(raw_img_size[0])
+    vchange = float(img_size[1]) / float(raw_img_size[1])
+    intr_small = intr.copy()
+    intr_small[0, :] *= uchange
+    intr_small[1, :] *= vchange
+    return intr_small
+
 def powerf(d_min, d_max, nDepth, power):
     f = lambda x: d_min + (d_max - d_min) * x
     x = np.linspace(start=0, stop=1, num=nDepth)
