@@ -53,9 +53,9 @@ class KVNET(nn.Module):
 
         # KV Net needs to process on size of input - do we need this now?
         # We should be doing 3D Conv after feature output
-        # self.kv_net = submodels.KV_NET_BASIC(3*(t_win_r*2+1) + 1, TWIN IS WRONG
-        #         feature_dim = KVNet_feature_dim,
-        #         up_sample_ratio = d_upsample_ratio_KV_net)
+        self.kv_net = submodels.KV_NET_BASIC(1,
+                feature_dim = KVNet_feature_dim,
+                up_sample_ratio = d_upsample_ratio_KV_net)
 
         self.r_net = submodels.RefineNet_DPV_upsample(
                 int(self.feature_dim), int(self.feature_dim/2), 3,
@@ -79,21 +79,13 @@ class KVNET(nn.Module):
         # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
 
         # Should we just add the knet for some 3D Conv? or some version of it
+        BV_cur_array = [BV_cur]
 
         # Make sure size is still correct here!
-        BV_cur_refined = self.r_net(torch.exp(BV_cur), img_features=d_net_features)
+        BV_cur_refined = self.r_net(torch.exp(BV_cur_array[-1]), img_features=d_net_features)
         # [B,128,256,384]
 
-        return BV_cur, BV_cur_refined
-
-        # Get Low Res Depth Map
-        # dmap_cur_lowres = util.depth_val_regression_batch(BV_cur, self.d_candi, BV_log=True).unsqueeze(1)
-        # [B,1,64,96]
-
-        pass
-        #print(model_input["rgb"].shape)
-
-
+        return BV_cur_array, BV_cur_refined
 
 
     def forward_prev(self, ref_frame, src_frames, src_cam_poses, BatchIdx, cam_intrinsics=None, BV_predict=None, mGPU= False,

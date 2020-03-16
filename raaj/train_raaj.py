@@ -701,11 +701,11 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     cv2.imshow("win", combined)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    visualizer.addCloud(cloud_low_truth, 3)
-                    visualizer.addCloud(cloud_truth,1)
+                    #visualizer.addCloud(cloud_low_truth, 3)
+                    #visualizer.addCloud(cloud_truth,1)
                     #visualizer.addCloud(cloud_low_orig, 3)
-                    #visualizer.addCloud(cloud_orig, 1)
-                    # visualizer.addCloud(slicecloud,2)
+                    visualizer.addCloud(cloud_orig, 1)
+                    visualizer.addCloud(slicecloud,2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()
                     key = cv2.waitKey(0)
@@ -738,44 +738,60 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, vi
     model_input_right, gt_input_right = generate_model_input(local_info_valid, "right", softce)
 
     # Run Forward
-    BV_cur_left, BV_cur_refined_left = torch.nn.parallel.data_parallel(model, model_input_left,
+    BV_cur_left_array, BV_cur_refined_left = torch.nn.parallel.data_parallel(model, model_input_left,
                                                                        range(ngpu))  # [B,128,64,96] [B,128,256,384]
-    BV_cur_right, BV_cur_refined_right = torch.nn.parallel.data_parallel(model, model_input_right,
+    BV_cur_right_array, BV_cur_refined_right = torch.nn.parallel.data_parallel(model, model_input_right,
                                                                          range(ngpu))  # [B,128,64,96] [B,128,256,384]
 
-    # NLL Loss
+    # NLL Loss for Low Res
     ce_loss = 0
-    for ibatch in range(BV_cur_left.shape[0]):
+    for ind in range(len(BV_cur_left_array)):
+        BV_cur_left = BV_cur_left_array[ind]
+        BV_cur_right = BV_cur_right_array[ind]
+        for ibatch in range(BV_cur_left.shape[0]):
+            if not softce:
+                # Left Losses
+                ce_loss = ce_loss + F.nll_loss(BV_cur_left[ibatch, :, :, :].unsqueeze(0),
+                                               gt_input_left["dmap_digits"][ibatch, :, :].unsqueeze(0), ignore_index=0)
+                # Right Losses
+                ce_loss = ce_loss + F.nll_loss(BV_cur_right[ibatch, :, :, :].unsqueeze(0),
+                                               gt_input_right["dmap_digits"][ibatch, :, :].unsqueeze(0), ignore_index=0)
+            else:
+                # Left Losses
+                ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_left["soft_labels"][ibatch].unsqueeze(0),
+                                                                 BV_cur_left[ibatch, :, :, :].unsqueeze(0),
+                                                                 mask=gt_input_left["masks"][ibatch, :, :, :], BV_log=True)
+                # Right Losses
+                ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_right["soft_labels"][ibatch].unsqueeze(0),
+                                                                 BV_cur_right[ibatch, :, :, :].unsqueeze(0),
+                                                                 mask=gt_input_right["masks"][ibatch, :, :, :], BV_log=True)
+
+    # NLL Loss for High Res
+    for ibatch in range(BV_cur_refined_left.shape[0]):
         if not softce:
             # Left Losses
-            ce_loss = ce_loss + F.nll_loss(BV_cur_left[ibatch, :, :, :].unsqueeze(0),
-                                           gt_input_left["dmap_digits"][ibatch, :, :].unsqueeze(0), ignore_index=0)
             ce_loss = ce_loss + F.nll_loss(BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
                                            gt_input_left["dmap_imgsize_digits"][ibatch, :, :].unsqueeze(0),
                                            ignore_index=0)
             # Right Losses
-            ce_loss = ce_loss + F.nll_loss(BV_cur_right[ibatch, :, :, :].unsqueeze(0),
-                                           gt_input_right["dmap_digits"][ibatch, :, :].unsqueeze(0), ignore_index=0)
             ce_loss = ce_loss + F.nll_loss(BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0),
                                            gt_input_right["dmap_imgsize_digits"][ibatch, :, :].unsqueeze(0),
                                            ignore_index=0)
         else:
             # Left Losses
-            ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_left["soft_labels"][ibatch].unsqueeze(0),
-                                                             BV_cur_left[ibatch, :, :, :].unsqueeze(0),
-                                                             mask=gt_input_left["masks"][ibatch, :, :, :], BV_log=True)
             ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0),
                                                              BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
                                                              mask=gt_input_left["masks_imgsizes"][ibatch, :, :, :],
                                                              BV_log=True)
             # Right Losses
-            ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_right["soft_labels"][ibatch].unsqueeze(0),
-                                                             BV_cur_right[ibatch, :, :, :].unsqueeze(0),
-                                                             mask=gt_input_right["masks"][ibatch, :, :, :], BV_log=True)
             ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0),
                                                              BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0),
                                                              mask=gt_input_right["masks_imgsizes"][ibatch, :, :, :],
                                                              BV_log=True)
+
+    # Get Last BV_cur
+    BV_cur_left = BV_cur_left_array[-1]
+    BV_cur_right = BV_cur_right_array[-1]
 
     # Regress all depthmaps once here
     small_dm_left_arr = []
