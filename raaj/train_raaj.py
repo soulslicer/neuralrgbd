@@ -34,9 +34,13 @@ import sys
 import signal
 
 exit = 0
+
+
 def signal_handler(sig, frame):
     global exit
     exit = 1
+
+
 signal.signal(signal.SIGINT, signal_handler)
 
 # Data Loading Module
@@ -44,6 +48,7 @@ import torch.multiprocessing
 from torch.multiprocessing import Process, Queue, Value, cpu_count
 
 visualizer = None
+
 
 def main():
     import argparse
@@ -109,6 +114,7 @@ def main():
     parser.add_argument('--dc_mul', type=float, default=0., help='Depth Consistency Loss Multiplier')
     parser.add_argument('--rsc_mul', type=float, default=0., help='RGB Stereo Consistency Loss Multiplier')
     parser.add_argument('--smooth_mul', type=float, default=0., help='Smoothness Loss Multiplier')
+    parser.add_argument('--nmode', type=str, default='default', help='Model Network Mode')
 
     # hack_num = 326
     hack_num = 0
@@ -118,6 +124,7 @@ def main():
 
     # Arguments Parsing
     args = parser.parse_args()
+    nmode = args.nmode
     smooth_mul = args.smooth_mul
     dsc_mul = args.dsc_mul
     dc_mul = args.dc_mul
@@ -262,7 +269,7 @@ def main():
     model_KVnet = KVNET(feature_dim=dnet_feature_dim, cam_intrinsics=None,
                         d_candi=d_candi, d_candi_up=d_candi_up, sigma_soft_max=sigma_soft_max,
                         KVNet_feature_dim=dnet_feature_dim,
-                        d_upsample_ratio_KV_net=None, drefine=drefine)
+                        d_upsample_ratio_KV_net=None, drefine=drefine, nmode=nmode)
 
     # model_KVnet = torch.nn.DataParallel(model_KVnet,  dim=0)
     model_KVnet.cuda()
@@ -322,7 +329,8 @@ def main():
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
-            results, results_low, rsc, smooth, dc = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, addparams, None, None)
+            results, results_low, rsc, smooth, dc = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, addparams,
+                                                            None, None)
             foutput["rmse"].append(results["rmse"][0]);
             foutput["rmse_low"].append(results_low["rmse"][0]);
             foutput["sil"].append(results["scale invariant log"][0]);
@@ -339,7 +347,7 @@ def main():
         print("SILS_low")
         print(foutput["sil_low"])
         import json
-        with open('outputs/saved_models/'+exp_name+'.json', 'w') as f:
+        with open('outputs/saved_models/' + exp_name + '.json', 'w') as f:
             json.dump(foutput, f)
         sys.exit()
 
@@ -364,6 +372,7 @@ def main():
 
     # Keep Getting
     start = time.time()
+    prev_output = None
     for items in b.get_mp():
         end = time.time()
         print("Data: " + str(end - start))
@@ -391,12 +400,15 @@ def main():
             local_info_valid = batch_loader.get_valid_items(local_info)
             local_info_valid["d_candi"] = d_candi
 
-            # Need to deal with resetting input in the future too with some flag!
+            # Reset Video
+            if frame_count == 1:
+                print('Resetting..')
+                prev_output = None
 
             # Train
-            output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, visualizer,
-                           lightcurtain)
-            loss_v = output["loss"]
+            prev_output = train(model_KVnet, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, prev_output,
+                                visualizer, lightcurtain)
+            loss_v = prev_output["loss"]
             # loss_v = 0
         else:
             loss_v = LOSS[-1]
@@ -557,6 +569,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
         dcloud.append([0, 0, m, 255, 255, 255, 0, 0, 0])
     dcloud = np.array(dcloud).astype(np.float32)
 
+    prev_output = None
     for items in btest.get_mp():
         if exit:
             print("Exiting")
@@ -566,6 +579,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
         # Get data
         local_info, batch_length, batch_idx, frame_count, ref_indx, iepoch = items
+        if frame_count == 1: prev_output = None
 
         # Need a way to see that video batch ended etc.
 
@@ -575,7 +589,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             local_info_valid = batch_loader.get_valid_items(local_info)
             local_info_valid["d_candi"] = d_candi
 
-            #viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
+            # viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
             # print("---")
             # continue
 
@@ -597,7 +611,10 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
             # Stuff
             start = time.time()
-            BV_cur_all, BV_cur_refined_all = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
+            model_input["prev_output"] = prev_output
+            BV_cur_all_arr, BV_cur_refined_all = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
+            BV_cur_all = BV_cur_all_arr[-1]
+            prev_output = BV_cur_all
             # print("Forward: " + str(time.time() - start))
 
             # Truth
@@ -620,7 +637,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 depth_mask = depth_mask_all[b, :, :, :]
                 depth_mask_low = depth_mask_low_all[b, :, :, :]
                 intr = model_input["intrinsics_up"][b, :, :].unsqueeze(0)
-                left_rgb = model_input["rgb"][b,-1,:,:,:].unsqueeze(0)
+                left_rgb = model_input["rgb"][b, -1, :, :, :].unsqueeze(0)
                 right_rgb = model_input_right["rgb"][b, -1, :, :, :].unsqueeze(0)
 
                 # Predicted
@@ -629,9 +646,11 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)  # [1,256,384]
                 depthmap_low_predicted = util.dpv_to_depthmap(dpv_low_predicted, d_candi, BV_log=True)  # [1,256,384]
 
+                # Generate UField
+
                 # Losses
                 rsc_sum += losses.rgb_stereo_consistency_loss(right_rgb, left_rgb, depthmap_predicted,
-                                                                         pose_target2src, intr)
+                                                              pose_target2src, intr)
                 smooth_sum += losses.edge_aware_smoothness_loss([depthmap_predicted.unsqueeze(0)], left_rgb, 1)
                 dc_sum += losses.depth_consistency_loss(depthmap_predicted, depthmap_low_predicted)
                 counter += 1
@@ -668,7 +687,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     slicecloud = np.zeros((subslice.shape[0], 9)).astype(np.float32)
                     slicecloud[:, 0:3] = subslice[:, 0:3]
                     subslice[:, 3] = (subslice[:, 3] - torch.min(subslice[:, 3])) / (
-                                torch.max(subslice[:, 3]) - torch.min(subslice[:, 3]))
+                            torch.max(subslice[:, 3]) - torch.min(subslice[:, 3]))
                     slicecloud[:, 3] = subslice[:, 3] * 255
                     slicecloud[:, 4] = 0
                     slicecloud[:, 5] = 50
@@ -697,15 +716,16 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     cloud_low_orig = util.tocloud(depthmap_low_predicted_np, img_low, intr, None)
                     cloud_orig = util.tocloud(depthmap_predicted_np, img, intr_up, None)
                     cloud_truth = util.tocloud(torch.tensor(depthmap_truth_np[np.newaxis, :]), img, intr_up, None)
-                    cloud_low_truth = util.tocloud(torch.tensor(depthmap_truth_low_np[np.newaxis, :]), img_low, intr, None)
+                    cloud_low_truth = util.tocloud(torch.tensor(depthmap_truth_low_np[np.newaxis, :]), img_low, intr,
+                                                   None)
                     cv2.imshow("win", combined)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    #visualizer.addCloud(cloud_low_truth, 3)
-                    #visualizer.addCloud(cloud_truth,1)
-                    #visualizer.addCloud(cloud_low_orig, 3)
+                    # visualizer.addCloud(cloud_low_truth, 3)
+                    # visualizer.addCloud(cloud_truth,1)
+                    # visualizer.addCloud(cloud_low_orig, 3)
                     visualizer.addCloud(cloud_orig, 1)
-                    visualizer.addCloud(slicecloud,2)
+                    #visualizer.addCloud(slicecloud, 2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()
                     key = cv2.waitKey(0)
@@ -721,9 +741,11 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
     dc_sum /= counter
     return results, results_low, rsc_sum, smooth_sum, dc_sum
 
-def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, visualizer, lightcurtain):
+
+def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, prev_output, visualizer, lightcurtain):
     # start = time.time()
     # print(time.time() - start)
+    # return {"loss": 0}
 
     # Readout AddParams
     d_candi = local_info_valid["d_candi"]
@@ -737,18 +759,26 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, vi
     model_input_left, gt_input_left = generate_model_input(local_info_valid, "left", softce)
     model_input_right, gt_input_right = generate_model_input(local_info_valid, "right", softce)
 
+    # Previous
+    if prev_output is not None:
+        model_input_left["prev_output"] = prev_output["BV_cur_left"]
+        model_input_right["prev_output"] = prev_output["BV_cur_right"]
+    else:
+        model_input_left["prev_output"] = None
+        model_input_right["prev_output"] = None
+
     # Run Forward
-    BV_cur_left_array, BV_cur_refined_left = torch.nn.parallel.data_parallel(model, model_input_left,
-                                                                       range(ngpu))  # [B,128,64,96] [B,128,256,384]
-    BV_cur_right_array, BV_cur_refined_right = torch.nn.parallel.data_parallel(model, model_input_right,
-                                                                         range(ngpu))  # [B,128,64,96] [B,128,256,384]
+    BV_cur_left_array, BV_cur_refined_left = torch.nn.parallel.data_parallel(model, model_input_left, range(ngpu))
+    BV_cur_right_array, BV_cur_refined_right = torch.nn.parallel.data_parallel(model, model_input_right, range(ngpu))
 
     # NLL Loss for Low Res
     ce_loss = 0
+    ce_count = 0
     for ind in range(len(BV_cur_left_array)):
         BV_cur_left = BV_cur_left_array[ind]
         BV_cur_right = BV_cur_right_array[ind]
         for ibatch in range(BV_cur_left.shape[0]):
+            ce_count += 1
             if not softce:
                 # Left Losses
                 ce_loss = ce_loss + F.nll_loss(BV_cur_left[ibatch, :, :, :].unsqueeze(0),
@@ -759,15 +789,18 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, vi
             else:
                 # Left Losses
                 ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_left["soft_labels"][ibatch].unsqueeze(0),
-                                                                 BV_cur_left[ibatch, :, :, :].unsqueeze(0),
-                                                                 mask=gt_input_left["masks"][ibatch, :, :, :], BV_log=True)
+                                                                   BV_cur_left[ibatch, :, :, :].unsqueeze(0),
+                                                                   mask=gt_input_left["masks"][ibatch, :, :, :],
+                                                                   BV_log=True)
                 # Right Losses
                 ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_right["soft_labels"][ibatch].unsqueeze(0),
-                                                                 BV_cur_right[ibatch, :, :, :].unsqueeze(0),
-                                                                 mask=gt_input_right["masks"][ibatch, :, :, :], BV_log=True)
+                                                                   BV_cur_right[ibatch, :, :, :].unsqueeze(0),
+                                                                   mask=gt_input_right["masks"][ibatch, :, :, :],
+                                                                   BV_log=True)
 
     # NLL Loss for High Res
     for ibatch in range(BV_cur_refined_left.shape[0]):
+        ce_count += 1
         if not softce:
             # Left Losses
             ce_loss = ce_loss + F.nll_loss(BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
@@ -779,15 +812,17 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, vi
                                            ignore_index=0)
         else:
             # Left Losses
-            ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0),
-                                                             BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
-                                                             mask=gt_input_left["masks_imgsizes"][ibatch, :, :, :],
-                                                             BV_log=True)
+            ce_loss = ce_loss + losses.soft_cross_entropy_loss(
+                gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0),
+                BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
+                mask=gt_input_left["masks_imgsizes"][ibatch, :, :, :],
+                BV_log=True)
             # Right Losses
-            ce_loss = ce_loss + losses.soft_cross_entropy_loss(gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0),
-                                                             BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0),
-                                                             mask=gt_input_right["masks_imgsizes"][ibatch, :, :, :],
-                                                             BV_log=True)
+            ce_loss = ce_loss + losses.soft_cross_entropy_loss(
+                gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0),
+                BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0),
+                mask=gt_input_right["masks_imgsizes"][ibatch, :, :, :],
+                BV_log=True)
 
     # Get Last BV_cur
     BV_cur_left = BV_cur_left_array[-1]
@@ -847,15 +882,17 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, vi
         mask_up_right = gt_input_right["masks_imgsizes"][ibatch, :, :, :]
         mask_right = gt_input_right["masks"][ibatch, :, :, :]
         # Right to Left
-        dsc_loss = dsc_loss + losses.depth_stereo_consistency_loss(depth_up_right, depth_up_left, mask_up_right, mask_up_left,
-                                                            pose_target2src, intr_up_left)
+        dsc_loss = dsc_loss + losses.depth_stereo_consistency_loss(depth_up_right, depth_up_left, mask_up_right,
+                                                                   mask_up_left,
+                                                                   pose_target2src, intr_up_left)
         dsc_loss = dsc_loss + losses.depth_stereo_consistency_loss(depth_right, depth_left, mask_right, mask_left,
-                                                            pose_target2src, intr_left)
+                                                                   pose_target2src, intr_left)
         # Left to Right
-        dsc_loss = dsc_loss + losses.depth_stereo_consistency_loss(depth_up_left, depth_up_right, mask_up_left, mask_up_right,
-                                                            pose_src2target, intr_up_right)
+        dsc_loss = dsc_loss + losses.depth_stereo_consistency_loss(depth_up_left, depth_up_right, mask_up_left,
+                                                                   mask_up_right,
+                                                                   pose_src2target, intr_up_right)
         dsc_loss = dsc_loss + losses.depth_stereo_consistency_loss(depth_left, depth_right, mask_left, mask_right,
-                                                            pose_src2target, intr_right)
+                                                                   pose_src2target, intr_right)
 
     # RGB Stereo Consistency Loss (Just on high res)
     rsc_loss = 0
@@ -875,11 +912,13 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, vi
         mask_up_right = gt_input_right["masks_imgsizes"][ibatch, :, :, :]
         # Right to Left
         # src_rgb_img, target_rgb_img, target_depth_map, pose_target2src, intr
-        rsc_loss = rsc_loss + losses.rgb_stereo_consistency_loss(rgb_up_right, rgb_up_left, depth_up_left, pose_target2src,
-                                                          intr_up_left, viz)
+        rsc_loss = rsc_loss + losses.rgb_stereo_consistency_loss(rgb_up_right, rgb_up_left, depth_up_left,
+                                                                 pose_target2src,
+                                                                 intr_up_left, viz)
         # Left to Right
-        rsc_loss = rsc_loss + losses.rgb_stereo_consistency_loss(rgb_up_left, rgb_up_right, depth_up_right, pose_src2target,
-                                                          intr_up_right)
+        rsc_loss = rsc_loss + losses.rgb_stereo_consistency_loss(rgb_up_left, rgb_up_right, depth_up_right,
+                                                                 pose_src2target,
+                                                                 intr_up_right)
 
     # Smoothness loss (Just on high res)
     smooth_loss = 0
@@ -897,7 +936,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, vi
     # Backward
     bsize = torch.tensor(float(BV_cur_left.shape[0] * 2)).cuda()
     optimizer_KV.zero_grad()
-    ce_loss = (ce_loss / bsize) * 1.
+    ce_loss = (ce_loss / ce_count) * 1.
     dsc_loss = (dsc_loss / bsize) * dsc_mul
     dc_loss = (dc_loss / bsize) * dc_mul
     rsc_loss = (rsc_loss / bsize) * rsc_mul
@@ -936,7 +975,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, vi
         cv2.waitKey(15)
 
     # Return
-    return {"loss": ce_loss.detach().cpu().numpy()}
+    return {"loss": ce_loss.detach().cpu().numpy(), "BV_cur_left": BV_cur_left.detach(), "BV_cur_right": BV_cur_right.detach()}
 
 
 class BatchSchedulerMP:

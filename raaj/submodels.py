@@ -57,7 +57,7 @@ class KV_NET_BASIC(nn.Module):
     '''
 
     def __init__(self, input_volume_channels, feature_dim = 32, if_normalize = \
-                 False, up_sample_ratio = None):
+                 False, up_sample_ratio = None, dres_count = 4):
         '''
         inputs:
         input_volume_channels - the # of channels for the input volume
@@ -66,6 +66,7 @@ class KV_NET_BASIC(nn.Module):
         self.in_channels = input_volume_channels
         self.if_normalize = if_normalize
         self.up_sample_ratio = up_sample_ratio
+        self.dres_count = dres_count
 
         # The basic 3D-CNN in PSM-net #
         self.dres0 = nn.Sequential(convbn_3d(input_volume_channels, feature_dim, 3, 1, 1),
@@ -73,21 +74,12 @@ class KV_NET_BASIC(nn.Module):
                                      convbn_3d(feature_dim, feature_dim, 3, 1, 1),
                                      nn.ReLU())
 
-        self.dres1 = nn.Sequential(convbn_3d(feature_dim, feature_dim, 3, 1, 1),
-                                   nn.ReLU(),
-                                   convbn_3d(feature_dim, feature_dim, 3, 1, 1)) 
-
-        self.dres2 = nn.Sequential(convbn_3d(feature_dim, feature_dim, 3, 1, 1),
-                                   nn.ReLU(),
-                                   convbn_3d(feature_dim, feature_dim, 3, 1, 1))
- 
-        self.dres3 = nn.Sequential(convbn_3d(feature_dim, feature_dim, 3, 1, 1),
-                                   nn.ReLU(),
-                                   convbn_3d(feature_dim, feature_dim, 3, 1, 1)) 
-
-        self.dres4 = nn.Sequential(convbn_3d(feature_dim, feature_dim, 3, 1, 1),
-                                   nn.ReLU(),
-                                   convbn_3d(feature_dim, feature_dim, 3, 1, 1)) 
+        self.dres_modules = []
+        for i in range(0, self.dres_count):
+            dres = nn.Sequential(convbn_3d(feature_dim, feature_dim, 3, 1, 1),
+                                 nn.ReLU(),
+                                 convbn_3d(feature_dim, feature_dim, 3, 1, 1))
+            self.dres_modules.append(dres.cuda())
 
         self.classify = nn.Sequential(convbn_3d(feature_dim, feature_dim, 3, 1, 1),
                                       nn.ReLU(),
@@ -110,7 +102,7 @@ class KV_NET_BASIC(nn.Module):
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
         
-    def forward(self, input_volume):
+    def forward(self, input_volume, prob=True):
         '''
         inputs:
         input_volume - multi-channel 3D volume. size: N C D H W
@@ -118,19 +110,18 @@ class KV_NET_BASIC(nn.Module):
         outputs:
         res_volume - single-channel 3D volume. size: N 1 D H W
         '''
-        assert input_volume.shape[1] == self.in_channels, 'Input volume should have correct # of channels !'
+        #assert input_volume.shape[1] == self.in_channels, 'Input volume should have correct # of channels !'
         N,C,D,H,W = input_volume.shape
 
         input_volume = input_volume.contiguous()
 
         # cost: the intermidiate results #
         cost0 = self.dres0(input_volume)
-        cost1 = self.dres1(cost0) + cost0
-        cost2 = self.dres2(cost1) + cost1 
-        cost3 = self.dres3(cost2) + cost2 
-        cost4 = self.dres4(cost3) + cost3
-        res_volume = self.classify(cost4)
-        if self.if_normalize:
+        curr_cost = cost0
+        for dres in self.dres_modules:
+            curr_cost = dres(curr_cost) + curr_cost
+        res_volume = self.classify(curr_cost)
+        if prob:
             res_volume = F.log_softmax(res_volume, dim=2)
         if self.up_sample_ratio is not None:
             # right now only up-sample in the D dimension #
@@ -291,7 +282,7 @@ class D_NET_BASIC(nn.Module):
             BV = F.softmax(costv_out2, dim=1)
 
         # Return BV and primary image features (in the future return others too for flow?)
-        return BV, [feat_imgs_all[:,-1,:-3, :,:], feat_imgs_layer_1[:,-1,:,:,:]]
+        return BV, cost_volumes, [feat_imgs_all[:,-1,:-3, :,:], feat_imgs_layer_1[:,-1,:,:,:]]
 
 class RefineNet_DPV_upsample(nn.Module):
     '''
