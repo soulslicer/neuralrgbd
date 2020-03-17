@@ -167,19 +167,24 @@ def depth_to_pts(depthf, intr):
     fy = intr[1,1]
     cy = intr[1,2]
 
-    # Create constant for X field and Y field (We should do this outside once)
-    if sstring not in xfield_d.keys() or sstring not in yfield_d.keys():
-        xfield_temp = torch.zeros(depth.shape)
-        yfield_temp = torch.zeros(depth.shape)
-        for v in range(0, depth.shape[0]):
-            for u in range(0, depth.shape[1]):
-                xfield_temp[v,u] = (float(u)-cx)/fx
-                yfield_temp[v,u] = (float(v)-cy)/fy
-        xfield_d[sstring] = xfield_temp
-        yfield_d[sstring] = yfield_temp
+    # # Create constant for X field and Y field (We should do this outside once)
+    # if sstring not in xfield_d.keys() or sstring not in yfield_d.keys():
+    #     xfield_temp = torch.zeros(depth.shape)
+    #     yfield_temp = torch.zeros(depth.shape)
+    #     for v in range(0, depth.shape[0]):
+    #         for u in range(0, depth.shape[1]):
+    #             xfield_temp[v,u] = (float(u)-cx)/fx
+    #             yfield_temp[v,u] = (float(v)-cy)/fy
+    #     xfield_d[sstring] = xfield_temp
+    #     yfield_d[sstring] = yfield_temp
+    # xfield = xfield_d[sstring]
+    # yfield = yfield_d[sstring]
 
-    xfield = xfield_d[sstring]
-    yfield = yfield_d[sstring]
+    # Faster
+    yfield, xfield = torch.meshgrid([torch.arange(0, depth.shape[0]).float().to(depthf.device),
+                                     torch.arange(0, depth.shape[1]).float().to(depthf.device)])
+    yfield = (yfield - cy) / fy
+    xfield = (xfield - cx) / fx
 
     # Multiply
     X = torch.mul(xfield, depth)
@@ -192,7 +197,7 @@ def depth_to_pts(depthf, intr):
 xyzivolume_d = dict()
 xfields_d = dict()
 yfields_d = dict()
-def dpv_to_xyz(dpv, d_candi, intr, offset=0, ds=1):
+def dpv_to_xyz(dpv, d_candi, intr, offset1=0, offset2=0):
     global xyzivolume_d
     global xfields_d
     global yfields_d
@@ -238,7 +243,7 @@ def dpv_to_xyz(dpv, d_candi, intr, offset=0, ds=1):
         xyzivolume[idx_d, :, :, 3] = dpv[0, idx_d, :, :]
 
     # Subslice
-    ranges = range(xyzivolume.shape[1]/2, xyzivolume.shape[1]/2 + offset)
+    ranges = range(xyzivolume.shape[1]/2 + offset1, xyzivolume.shape[1]/2 + offset2)
     subslice = xyzivolume[:,ranges, :,:] # I need to keep increaseing this value?
     subslice = subslice.reshape((subslice.shape[0]*subslice.shape[1]*subslice.shape[2], 4))
     return subslice # torch.Size([24576, 4])

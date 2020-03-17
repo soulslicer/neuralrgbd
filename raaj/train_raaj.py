@@ -565,7 +565,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
     # Cloud for distance
     dcloud = []
-    for m in range(0, 20):
+    for m in range(0, 40):
         dcloud.append([0, 0, m, 255, 255, 255, 0, 0, 0])
     dcloud = np.array(dcloud).astype(np.float32)
 
@@ -646,7 +646,8 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)  # [1,256,384]
                 depthmap_low_predicted = util.dpv_to_depthmap(dpv_low_predicted, d_candi, BV_log=True)  # [1,256,384]
 
-                # Generate UField
+                # Generate UField (Need to iterate for all)
+                # losses.gen_ufield(dpv_predicted, d_candi, intr, visualizer)
 
                 # Losses
                 rsc_sum += losses.rgb_stereo_consistency_loss(right_rgb, left_rgb, depthmap_predicted,
@@ -682,8 +683,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
                     # Visualize side Cloud
                     # subslice = util.dpv_to_xyz(torch.exp(dpv_low_predicted), d_candi, intr, 3, 1)  # torch.Size([24576, 4])
-                    subslice = util.dpv_to_xyz(torch.exp(dpv_predicted), d_candi, intr_up, 10,
-                                               4)  # torch.Size([24576, 4])
+                    subslice = util.dpv_to_xyz(torch.exp(dpv_predicted), d_candi, intr_up, 30,31)  # torch.Size([24576, 4])
                     slicecloud = np.zeros((subslice.shape[0], 9)).astype(np.float32)
                     slicecloud[:, 0:3] = subslice[:, 0:3]
                     subslice[:, 3] = (subslice[:, 3] - torch.min(subslice[:, 3])) / (
@@ -712,20 +712,23 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                         lccloud = util.hack(lccloud)
                         visualizer.addCloud(lccloud, 2)
 
+                    # Hack
+                    losses.gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img)
+
                     # Cloud
                     cloud_low_orig = util.tocloud(depthmap_low_predicted_np, img_low, intr, None)
                     cloud_orig = util.tocloud(depthmap_predicted_np, img, intr_up, None)
                     cloud_truth = util.tocloud(torch.tensor(depthmap_truth_np[np.newaxis, :]), img, intr_up, None)
                     cloud_low_truth = util.tocloud(torch.tensor(depthmap_truth_low_np[np.newaxis, :]), img_low, intr,
-                                                   None)
+                                                   None, [0,255,0])
                     cv2.imshow("win", combined)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    # visualizer.addCloud(cloud_low_truth, 3)
+                    visualizer.addCloud(cloud_low_truth, 3)
                     # visualizer.addCloud(cloud_truth,1)
                     # visualizer.addCloud(cloud_low_orig, 3)
                     visualizer.addCloud(cloud_orig, 1)
-                    #visualizer.addCloud(slicecloud, 2)
+                    visualizer.addCloud(slicecloud, 2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()
                     key = cv2.waitKey(0)
