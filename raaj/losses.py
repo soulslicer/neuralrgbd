@@ -221,7 +221,7 @@ def gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img):
     # DPV Zero out and collapse
     zero_mask_predicted = zero_mask_predicted.repeat([64, 1, 1], 0, 1).unsqueeze(0)
     dpv_plane = torch.sum(torch.exp(dpv_predicted) * zero_mask_predicted, axis = 2) # [1,64,384]
-    #dpv_plane = F.softmax(dpv_plane, dim=1)
+    dpv_plane = F.softmax(dpv_plane, dim=1)
 
     # Apply softmax here?
 
@@ -230,9 +230,13 @@ def gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img):
     maxval, _ = dpv_plane.max(1)  # [1,384]
     #dpv_plane = (dpv_plane - minval) / (maxval - minval)
     viz = dpv_plane.squeeze(0).cpu().numpy()
-    cv2.imshow("win", viz)
+    cv2.imshow("win", viz*20)
 
-    # We need
+    # We should draw the ground truth profile on this field
+
+    # We need to power unwarp it
+
+    # Need to transform it
 
 
     #depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)
