@@ -26,29 +26,24 @@ import losses
 # Other
 from tensorboardX import SummaryWriter
 
-# PCL
-# from viewer import viewer
-
 # Kill
 import sys
 import signal
 
-exit = 0
-
-
-def signal_handler(sig, frame):
-    global exit
-    exit = 1
-
-
-signal.signal(signal.SIGINT, signal_handler)
-
 # Data Loading Module
 import torch.multiprocessing
 from torch.multiprocessing import Process, Queue, Value, cpu_count
+from batch_scheduler import *
 
+# Exit
+exit = 0
+def signal_handler(sig, frame):
+    global exit
+    exit = 1
+signal.signal(signal.SIGINT, signal_handler)
+
+# Global Vars
 visualizer = None
-
 
 def main():
     import argparse
@@ -58,7 +53,7 @@ def main():
     # Parameters
     parser.add_argument('--exp_name', required=True, type=str,
                         help='The name of the experiment. Used to naming the folders')
-    parser.add_argument('--nepoch', required=True, type=int, help='# of epochs to run')
+    parser.add_argument('--nepoch', type=int, help='# of epochs to run')
     parser.add_argument('--pre_trained', action='store_true', default=False,
                         help='If use the pre-trained model; (False)')
     # Logging #
@@ -88,8 +83,8 @@ def main():
     parser.add_argument('--sigma_soft_max', type=float, default=10., help='sigma_soft_max, default = 500.')
     parser.add_argument('--feature_dim', type=int, default=64,
                         help='The feature dimension for the feature extractor; default=64')
-    parser.add_argument('--batch_size', type=int, default=0,
-                        help='The batch size for training; default=0, means batch_size=nGPU')
+    parser.add_argument('--batch_size', type=int, default=1,
+                        help='The batch size for training; default=1, means batch_size=nGPU')
     # Dataset #
     parser.add_argument('--dataset', type=str, default='scanNet', help='Dataset name: {scanNet, kitti,}')
     parser.add_argument('--dataset_path', type=str, default='.', help='Path to the dataset')
@@ -115,15 +110,42 @@ def main():
     parser.add_argument('--rsc_mul', type=float, default=0., help='RGB Stereo Consistency Loss Multiplier')
     parser.add_argument('--smooth_mul', type=float, default=0., help='Smoothness Loss Multiplier')
     parser.add_argument('--nmode', type=str, default='default', help='Model Network Mode')
+    parser.add_argument('--run_eval', action='store_true', default=False)
+    parser.add_argument('--run_model', action='store_true', default=False)
+    parser.add_argument('--load_args', action='store_true', default=False)
 
     # hack_num = 326
     hack_num = 0
-    # print("HACK!!")
 
     # ==================================================================================== #
 
     # Arguments Parsing
     args = parser.parse_args()
+    saved_model_path = "./outputs/saved_models/" + args.exp_name + "/"
+    args_path = saved_model_path + "args.json"
+    if args.load_args:
+        args_old, leftover = parser.parse_known_args()
+        args = util.load_argparse(args_path)
+        # Add more variables later
+        args.viz = args_old.viz
+        args.ngpu = int(args_old.ngpu)
+        args.batch_size = int(args_old.batch_size)
+        args.run_eval = args_old.run_eval
+        args.run_model = args_old.run_model
+
+    # Quick Modes
+    if args.run_eval:
+        print("Run Eval Mode")
+        args.test = True
+        args.pre_trained = True
+        args.pre_trained_folder = saved_model_path
+    elif args.run_model:
+        print("Run Model Mode")
+        args.test = True
+        args.pre_trained = True
+        args.pre_trained_model_path = saved_model_path
+
+    # Readout
     nmode = args.nmode
     smooth_mul = args.smooth_mul
     dsc_mul = args.dsc_mul
@@ -137,7 +159,6 @@ def main():
     pre_trained_folder = args.pre_trained_folder
     test = args.test
     exp_name = args.exp_name
-    saved_model_path = './outputs/saved_models/%s' % (exp_name)
     dataset_name = args.dataset
     batch_size = args.batch_size
     n_epoch = args.nepoch
@@ -173,6 +194,7 @@ def main():
     # Save Folder #
     util.m_makedir(saved_model_path)
     savemodel_interv = args.save_model_interv
+    if not test: util.save_argparse(args, saved_model_path + "/args.json")
 
     # Writer #
     log_dir = 'outputs/%s/%s' % (args.TB_fldr, exp_name)
@@ -211,8 +233,6 @@ def main():
             img_size = [768, 256]
             crop_w = None
 
-        # https://github.com/ClementPinard/SfmLearner-Pytorch/blob/master/inverse_warp.py
-
         # Testing Data Loader
         testing_inputs = {
             "pytorch_scaling": pytorch_scaling,
@@ -231,11 +251,6 @@ def main():
             "mode": "val"
         }
         btest = BatchSchedulerMP(testing_inputs, 1)
-
-        # # HACK
-        # for items in btest.get_mp():
-        #     pass
-        # stop
 
         # Training Data Loader
         training_inputs = {
@@ -277,8 +292,9 @@ def main():
 
     optimizer_KV = optim.Adam(model_KVnet.parameters(), lr=LR, betas=(.9, .999))
 
-    model_path_KV = saved_model_path + "/../" + args.pre_trained_model_path
+    model_path_KV = args.pre_trained_model_path
     if model_path_KV is not '.' and pre_trained:
+        model_path_KV = util.load_filenames_from_folder(model_path_KV)[-1]
         print('loading KV_net at %s' % (model_path_KV))
         lparams = util.load_pretrained_model(model_KVnet, model_path_KV, optimizer_KV)
     else:
@@ -298,17 +314,7 @@ def main():
 
     # Evaluate Model Graph
     if len(pre_trained_folder):
-        import re
-        def natural_sort(l):
-            convert = lambda text: int(text) if text.isdigit() else text.lower()
-            alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
-            return sorted(l, key=alphanum_key)
-
-        all_files = []
-        for subdir, dirs, files in os.walk(pre_trained_folder):
-            for file in files:
-                all_files.append(os.path.join(subdir, file))
-        all_files = natural_sort(all_files)
+        all_files = util.load_filenames_from_folder(pre_trained_folder)
         model_KVnet.eval()
         foutput = {
             "name": exp_name,
@@ -322,10 +328,6 @@ def main():
             "smooth": [],
             "dc": []
         }
-        rmses = [];
-        rmses_low = [];
-        sils = [];
-        sils_low = [];
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
@@ -425,7 +427,7 @@ def main():
             writer.add_scalar('data/train_error', float(loss_v), total_iter)
 
         # Save
-        if total_iter % savemodel_interv == 0 and total_iter != 0:
+        if total_iter % savemodel_interv == 0:
             print("Saving..")
             # if training, save the model #
             savefilename = saved_model_path + '/kvnet_checkpoint_iter_' + str(total_iter) + '.tar'
@@ -562,6 +564,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
     smooth_sum = 0.
     counter = 0.
     start = time.time()
+    softce = addparams["softce"]
 
     # Cloud for distance
     dcloud = []
@@ -589,12 +592,8 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             local_info_valid = batch_loader.get_valid_items(local_info)
             local_info_valid["d_candi"] = d_candi
 
-            # viz_debug(local_info_valid, visualizer, d_candi, d_candi_up)
-            # print("---")
-            # continue
-
             # Create input
-            model_input, gt_input = generate_model_input(local_info_valid)
+            model_input, gt_input = generate_model_input(local_info_valid, "left", softce)
             model_input_right, gt_input_right = generate_model_input(local_info_valid, "right")
 
             # Create LC output
@@ -639,6 +638,8 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 intr = model_input["intrinsics_up"][b, :, :].unsqueeze(0)
                 left_rgb = model_input["rgb"][b, -1, :, :, :].unsqueeze(0)
                 right_rgb = model_input_right["rgb"][b, -1, :, :, :].unsqueeze(0)
+                soft_label_refined = gt_input["soft_labels_imgsize"][b].unsqueeze(0)
+                #hard_label_refined = util.digitized_to_dpv(gt_input["dmap_imgsize_digits"][b,:,:].unsqueeze(0), len(d_candi))
 
                 # Predicted
                 dpv_low_predicted = BV_cur[0, :, :, :].unsqueeze(0).detach()
@@ -712,8 +713,42 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                         lccloud = util.hack(lccloud)
                         visualizer.addCloud(lccloud, 2)
 
-                    # Hack
-                    losses.gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img)
+                    # Field
+                    soft_label_refined = soft_label_refined * depth_mask.float()
+                    #GEN UFIELD TAKE AVERAGE
+                    #CHECK THE PYTORCH THING
+                    dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img, True, False)
+                    dpv_plane_truth, _ = losses.gen_ufield(soft_label_refined, d_candi, intr_up, visualizer, img, False, True)
+
+                    import matplotlib.pyplot as plt
+                    def plotfig(index):
+                        dist_pred = dpv_plane_predicted[0,:,index].cpu().numpy()
+                        dist_truth = dpv_plane_truth[0, :, index].cpu().numpy()
+                        plt.figure()
+                        plt.plot(np.array(d_candi), dist_pred)
+                        plt.plot(np.array(d_candi), dist_truth)
+                        plt.ion()
+                        plt.pause(0.005)
+                        plt.show()
+                    plotfig(283)
+                    plotfig(345)
+                    # plotfig(24)
+                    # plotfig(187)
+
+                    cloud = util.tocloud(debugmap.cpu(), img, intr_up, None, [255, 255, 255])
+                    visualizer.addCloud(cloud, 3)
+                    viz1 = dpv_plane_truth.squeeze(0).cpu().numpy()
+                    viz2 = dpv_plane_predicted.squeeze(0).cpu().numpy()
+                    truth = ((viz1 * 1)*255).astype(np.uint8)
+                    pred = ((viz2 * 10)*255).astype(np.uint8)
+                    mask = (pred > 1).astype(np.uint8)
+                    pred_col = cv2.cvtColor(pred, cv2.COLOR_GRAY2BGR)
+                    for r in range(0, pred.shape[0]):
+                        for c in range(0, pred.shape[1]):
+                            if truth[r,c] > 1:
+                                pred_col[r,c,:] = [0,0,255]
+                    cv2.imshow("final", pred_col)
+
 
                     # Cloud
                     cloud_low_orig = util.tocloud(depthmap_low_predicted_np, img_low, intr, None)
@@ -724,11 +759,11 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     cv2.imshow("win", combined)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    visualizer.addCloud(cloud_low_truth, 3)
+                    # visualizer.addCloud(cloud_low_truth, 3)
                     # visualizer.addCloud(cloud_truth,1)
                     # visualizer.addCloud(cloud_low_orig, 3)
                     visualizer.addCloud(cloud_orig, 1)
-                    visualizer.addCloud(slicecloud, 2)
+                    #visualizer.addCloud(slicecloud, 2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()
                     key = cv2.waitKey(0)
@@ -748,7 +783,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, prev_output, visualizer, lightcurtain):
     # start = time.time()
     # print(time.time() - start)
-    # return {"loss": 0}
+    # return {"loss": 0, "BV_cur_left": 0, "BV_cur_right": 0}
 
     # Readout AddParams
     d_candi = local_info_valid["d_candi"]
@@ -979,143 +1014,6 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
 
     # Return
     return {"loss": ce_loss.detach().cpu().numpy(), "BV_cur_left": BV_cur_left.detach(), "BV_cur_right": BV_cur_right.detach()}
-
-
-class BatchSchedulerMP:
-    def __init__(self, inputs, mode):
-        self.mode = mode
-        self.inputs = inputs
-        self.queue = Queue()
-        self.control = Value('i', 1)
-        if self.mode == 0:
-            self.process = Process(target=self.worker, args=(self.inputs, self.queue, self.control))
-            self.process.start()
-        # self.worker(self.inputs, self.queue, self.control)
-
-    def stop(self):
-        self.control.value = 0
-
-    def get_mp(self):
-        if self.mode == 0:
-            while 1:
-                items = self.queue.get()
-                if items is None: break
-                yield items
-        else:
-            for items in self.single(self.inputs):
-                if items is None: break
-                yield items
-
-    def load(self, inputs):
-        dataset_path = inputs["dataset_path"]
-        t_win_r = inputs["t_win_r"]
-        img_size = inputs["img_size"]
-        crop_w = inputs["crop_w"]
-        d_candi = inputs["d_candi"]
-        d_candi_up = inputs["d_candi_up"]
-        dataset_name = inputs["dataset_name"]
-        hack_num = inputs["hack_num"]
-        batch_size = inputs["batch_size"]
-        qmax = inputs["qmax"]
-        n_epoch = inputs["n_epoch"]
-        mode = inputs["mode"]
-        pytorch_scaling = inputs["pytorch_scaling"]
-        velodyne_depth = inputs["velodyne_depth"]
-        if mode == "train":
-            split_txt = './kitti_split/training.txt'
-        elif mode == "val":
-            split_txt = './kitti_split/testing.txt'
-
-        dataset_init = kitti.KITTI_dataset
-        fun_get_paths = lambda traj_indx: kitti.get_paths(traj_indx, split_txt=split_txt,
-                                                          mode=mode,
-                                                          database_path_base=dataset_path, t_win=t_win_r)
-
-        # Load Dataset
-        n_scenes, _, _, _, _ = fun_get_paths(0)
-        traj_Indx = np.arange(0, n_scenes)
-        fldr_path, img_paths, dmap_paths, poses, intrin_path = fun_get_paths(0)
-        dataset = dataset_init(True, img_paths, dmap_paths, poses,
-                               intrin_path=intrin_path, img_size=img_size, digitize=True,
-                               d_candi=d_candi, d_candi_up=d_candi_up, resize_dmap=.25,
-                               crop_w=crop_w, velodyne_depth=velodyne_depth, pytorch_scaling=pytorch_scaling)
-        BatchScheduler = batch_loader.Batch_Loader(
-            batch_size=batch_size, fun_get_paths=fun_get_paths,
-            dataset_traj=dataset, nTraj=len(traj_Indx), dataset_name=dataset_name, t_win_r=t_win_r,
-            hack_num=hack_num)
-        return BatchScheduler
-
-    def worker(self, inputs, queue, control):
-        qmax = inputs["qmax"]
-        n_epoch = inputs["n_epoch"]
-
-        # Iterate batch
-        broken = False
-        for iepoch in range(n_epoch):
-            BatchScheduler = self.load(inputs)
-            for batch_idx in range(len(BatchScheduler)):
-                start = time.time()
-                for frame_count, ref_indx in enumerate(range(BatchScheduler.traj_len)):
-                    local_info = BatchScheduler.local_info_full()
-
-                    # Queue Max
-                    while queue.qsize() >= qmax:
-                        if control.value == 0:
-                            broken = True
-                            break
-                        time.sleep(0.01)
-                    if control.value == 0:
-                        broken = True
-                        break
-
-                    # Put in Q
-                    queue.put([local_info, len(BatchScheduler), batch_idx, frame_count, ref_indx, iepoch])
-
-                    # Update dat_array
-                    if frame_count < BatchScheduler.traj_len - 1:
-                        BatchScheduler.proceed_frame()
-
-                    # print(batch_idx, frame_count)
-                    if broken: break
-
-                if broken: break
-                BatchScheduler.proceed_batch()
-
-            if broken: break
-        queue.put(None)
-        time.sleep(1)
-
-    def single(self, inputs):
-        qmax = inputs["qmax"]
-        n_epoch = inputs["n_epoch"]
-
-        # Iterate batch
-        broken = False
-        for iepoch in range(n_epoch):
-            BatchScheduler = self.load(inputs)
-            for batch_idx in range(len(BatchScheduler)):
-                start = time.time()
-                for frame_count, ref_indx in enumerate(range(BatchScheduler.traj_len)):
-                    local_info = BatchScheduler.local_info_full()
-
-                    # if frame_count == 0:
-                    #   print(local_info["src_dats"][0][0]["left_camera"]["img_path"])
-
-                    # Put in Q
-                    yield [local_info, len(BatchScheduler), batch_idx, frame_count, ref_indx, iepoch]
-
-                    # Update dat_array
-                    if frame_count < BatchScheduler.traj_len - 1:
-                        BatchScheduler.proceed_frame()
-
-                    # print(batch_idx, frame_count)
-                    if broken: break
-
-                if broken: break
-                BatchScheduler.proceed_batch()
-
-            if broken: break
-        yield None
 
 
 if __name__ == '__main__':

@@ -190,7 +190,12 @@ def convert_flowfield(flowfield):
     flowfield[0, :, :, 1] = -1 + yv * ystep - flowfield[0, :, :, 1] * ystep
     return flowfield
 
-def gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img):
+def gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img, BV_log=True, normalize=False):
+    # fag = torch.exp(dpv_predicted)[0,:,200,200]
+    # print(fag)
+    # out = torch.sum(fag, axis=0)
+    # print(out)
+    # stop
 
     # Generate Shiftmap
     pshift = 5
@@ -202,80 +207,53 @@ def gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img):
     convert_flowfield(flowfield_inv)
 
     # Shift the DPV
-    dpv_shifted = F.grid_sample(dpv_predicted, flowfield)
-    depthmap_shifted = util.dpv_to_depthmap(dpv_shifted, d_candi, BV_log=True)
-    depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)
+    dpv_shifted = F.grid_sample(dpv_predicted, flowfield, mode='nearest')
+    depthmap_shifted = util.dpv_to_depthmap(dpv_shifted, d_candi, BV_log=BV_log)
+    depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=BV_log)
 
     # Get Mask for Pts within Y range
     maxd = 40. # Issue, currentnetwork puts maxrange wrong
     pts_shifted = util.depth_to_pts(depthmap_shifted, intr_up)
     #zero_mask = (~((pts_shifted[1,:,:] > 1.4) | (pts_shifted[1,:,:] < -1.0))).float()
     #zero_mask = (~((pts_shifted[1, :, :] > 1.3) | (pts_shifted[1, :, :] < 1.0))).float()
-    zero_mask = (~((pts_shifted[1, :, :] > 1.0) | (pts_shifted[1, :, :] < 0.5) | (pts_shifted[2, :, :] > maxd-1))).float() # THEY ALL SEEM TO BE DIFF HEIGHT? (CHECK CALIB)
-    depthmap_shifted = depthmap_shifted * zero_mask
+    # (~((pts_shifted[1, :, :] > 1.0) | (pts_shifted[1, :, :] < 0.5)
+    zero_mask = (~((pts_shifted[1, :, :] > 0.9) | (pts_shifted[1, :, :] < 0.6) | (pts_shifted[2, :, :] > maxd-1))).float() # THEY ALL SEEM TO BE DIFF HEIGHT? (CHECK CALIB)
+    depthmap_shifted_zero = depthmap_shifted * zero_mask
+
+    # # HACK
+    # visualizer.addCloud(util.tocloud(depthmap_shifted.cpu(), img, intr_up, None, [255,255,255]), 1)
+    # visualizer.addCloud(util.tocloud(depthmap_shifted_zero.cpu(), img, intr_up, None, [255, 255, 255]), 3)
+    # visualizer.swapBuffer()
+    # import time
+    # while 1:
+    #     cv2.waitKey(15)
+    #     time.sleep(0.1)
 
     # Shift Mask
-    zero_mask_predicted = F.grid_sample(zero_mask.unsqueeze(0).unsqueeze(0), flowfield_inv).squeeze(0).squeeze(0)
-    depthmap_predicted = depthmap_predicted * zero_mask_predicted
+    zero_mask_predicted = F.grid_sample(zero_mask.unsqueeze(0).unsqueeze(0), flowfield_inv, mode='nearest').squeeze(0).squeeze(0)
+    depthmap_predicted_zero = depthmap_predicted * zero_mask_predicted
+
+    # # HACK
+    # visualizer.addCloud(util.tocloud(depthmap_predicted.cpu(), img, intr_up, None, [255,255,255]), 1)
+    # visualizer.addCloud(util.tocloud(depthmap_predicted_zero.cpu(), img, intr_up, None, [255, 255, 255]), 3)
+    # visualizer.swapBuffer()
+    # import time
+    # while 1:
+    #     cv2.waitKey(15)
+    #     time.sleep(0.1)
 
     # DPV Zero out and collapse
     zero_mask_predicted = zero_mask_predicted.repeat([64, 1, 1], 0, 1).unsqueeze(0)
     dpv_plane = torch.sum(torch.exp(dpv_predicted) * zero_mask_predicted, axis = 2) # [1,64,384]
-    dpv_plane = F.softmax(dpv_plane, dim=1)
 
-    # Apply softmax here?
+    # Normalize
+    ax = torch.sum(zero_mask, axis=0)
+    dpv_plane = dpv_plane / ax
+    #dpv_plane = F.softmax(dpv_plane, dim=1)
 
     # Make 0 to 1 for visualization
     minval, _ = dpv_plane.min(1) # [1,384]
     maxval, _ = dpv_plane.max(1)  # [1,384]
-    #dpv_plane = (dpv_plane - minval) / (maxval - minval)
-    viz = dpv_plane.squeeze(0).cpu().numpy()
-    cv2.imshow("win", viz*20)
+    if(normalize): dpv_plane = (dpv_plane - minval) / (maxval - minval)
 
-    # We should draw the ground truth profile on this field
-
-    # We need to power unwarp it
-
-    # Need to transform it
-
-
-    #depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)
-
-
-    #
-
-    # Cloud for distance
-    dcloud = []
-    for m in range(0, 40):
-        dcloud.append([0, 2.5, m, 255, 0, 0, 0, 0, 0])
-    dcloud = np.array(dcloud).astype(np.float32)
-    #cv2.imshow("win", depthmap_predicted.squeeze(0).cpu().numpy()/100.)
-    cloud = util.tocloud(depthmap_predicted.cpu(), img, intr_up, None, [255,255,255])
-    visualizer.addCloud(cloud, 1)
-    visualizer.addCloud(dcloud, 5)
-    visualizer.swapBuffer()
-    import time
-    while 1:
-        cv2.waitKey(15)
-        time.sleep(0.1)
-
-    #stop
-
-    #cloud_orig = util.tocloud(depthmap_predicted_np, img, intr_up, None)
-
-
-    #for d
-
-    """
-    1. Shift the DPV Pixels all up by some degree until it looks flat (Viz depthmap and ptcloud)
-    2. Convert into an XYZ field, remove those that Y value is above a certain value (Road)
-        Same for Sky to remove them
-        Remove a good chunk of it, only keep the middle parts of car.
-    3. You can then flatten it (Depends on 2.)
-    4. At this point, see if those near edges have a bad distribution
-        Try to get rid of those with extreme uncertainty?
-    4. Power Rescale. We can take each distribution and rescale it
-    """
-
-    #stop
-
+    return dpv_plane, depthmap_predicted_zero

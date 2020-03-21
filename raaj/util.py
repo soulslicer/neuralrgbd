@@ -42,6 +42,38 @@ def load_pretrained_model(model, pretrained_path, optimizer = None):
 
     return {"iter": pre_model_dict_info['iter']}
 
+def save_argparse(args, path):
+    import json
+    with open(path, 'w') as f:
+        json.dump(args.__dict__, f, indent=2)
+
+class Args():
+    pass
+def load_argparse(path):
+    import argparse
+    import json
+    parser = argparse.ArgumentParser()
+    args = Args()
+    with open(path, 'r') as f:
+        args.__dict__ = json.load(f)
+    return args
+
+def load_filenames_from_folder(pre_trained_folder):
+    import re
+    import os
+    def natural_sort(l):
+        convert = lambda text: int(text) if text.isdigit() else text.lower()
+        alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+        return sorted(l, key=alphanum_key)
+
+    all_files = []
+    for subdir, dirs, files in os.walk(pre_trained_folder):
+        for file in files:
+            if ".tar" not in file: continue
+            all_files.append(os.path.join(subdir, file))
+    all_files = natural_sort(all_files)
+    return all_files
+
 def intr_scale(intr, raw_img_size, img_size):
     uchange = float(img_size[0]) / float(raw_img_size[0])
     vchange = float(img_size[1]) / float(raw_img_size[1])
@@ -126,7 +158,7 @@ def digitized_to_dpv(depth_digit, N):
         raise Exception('Unable to handle this case')
 
     bsize = 1
-    tensor = torch.zeros((bsize, N, depth_digit.shape[1], depth_digit.shape[2]))
+    tensor = torch.zeros((bsize, N, depth_digit.shape[1], depth_digit.shape[2])).cuda()
 
     bindex = 0
     for r in range(0, depth_digit.shape[1]):
