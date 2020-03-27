@@ -909,7 +909,51 @@ def dpv_statistics(BV_measure, d_candi, statistics, BV_log = True):
     dpv_feats = torch.cat(dpv_feats, dim=1) 
     return dpv_feats
 
+def UnitQ2Rotation(r_uq):
+    assert isinstance(r_uq, torch.Tensor)
+    r_q = torch.zeros(4).cuda()
+    unitQ_to_quat(r_uq, r_q)
+    R = quaternion2Rotation(r_q, is_tensor=True)
+    return R
 
+def Rotation2UnitQ(R):
+    r_q = torch.zeros(4).cuda()
+    r_uq = torch.zeros(3).cuda()
+    Rotation2Quaternion(R, r_q)
+    quat_to_unitQ( r_q, r_uq)
+    return r_uq
+
+def add_noise2pose(src_cam_poses_in, noise_level =.2):
+    '''
+    noise_level - gaussian_sigma / norm_r r, gaussian_sigma/ norm_t for t
+    add Gaussian noise to the poses:
+    for R: add in the unit-quaternion space
+    for t: add in the raw space
+    '''
+
+    src_cam_poses_out = torch.zeros( src_cam_poses_in.shape)
+    src_cam_poses_out[:, :, 3, 3] = 1.
+    # for each batch #
+    for ibatch in range(src_cam_poses_in.shape[0]):
+        src_cam_poses_perbatch = src_cam_poses_in[ibatch, ...]
+        for icam in range(src_cam_poses_perbatch.shape[0]):
+            src_cam_pose = src_cam_poses_perbatch[icam, ...]
+
+            # convert to unit quaternion #
+            r = Rotation2UnitQ(src_cam_pose[:3, :3].cuda())
+            t = src_cam_pose[:3, 3]
+
+            # add noise to r and t #
+            sigma_r = noise_level * r.norm()
+            sigma_t = noise_level * t.norm()
+            r = r + torch.randn(r.shape).cuda() * sigma_r
+            t = t + torch.randn(t.shape) * sigma_t
+
+            # put back in to src_cam_poses_out #
+            src_cam_poses_out[ibatch, icam, :3, :3] = UnitQ2Rotation( r).cpu()
+            src_cam_poses_out[ibatch, icam, :3, 3] = t
+
+    return src_cam_poses_out
 
 # IO # 
 def save_ScenePathInfo(fpath, scene_path_info):

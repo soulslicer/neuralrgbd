@@ -109,6 +109,7 @@ def main():
     parser.add_argument('--dc_mul', type=float, default=0., help='Depth Consistency Loss Multiplier')
     parser.add_argument('--rsc_mul', type=float, default=0., help='RGB Stereo Consistency Loss Multiplier')
     parser.add_argument('--smooth_mul', type=float, default=0., help='Smoothness Loss Multiplier')
+    parser.add_argument('--pnoise', type=float, default=0., help='Noise added to pose')
     parser.add_argument('--nmode', type=str, default='default', help='Model Network Mode')
     parser.add_argument('--run_eval', action='store_true', default=False)
     parser.add_argument('--run_model', action='store_true', default=False)
@@ -132,6 +133,7 @@ def main():
         args.batch_size = int(args_old.batch_size)
         args.run_eval = args_old.run_eval
         args.run_model = args_old.run_model
+        args.lc = args_old.lc
 
     # Quick Modes
     if args.run_eval:
@@ -147,6 +149,7 @@ def main():
 
     # Readout
     nmode = args.nmode
+    pnoise = args.pnoise
     smooth_mul = args.smooth_mul
     dsc_mul = args.dsc_mul
     dc_mul = args.dc_mul
@@ -206,7 +209,8 @@ def main():
 
     if lc:
         # CO Stuff
-        sys.path.append("/home/raaj/cmu/lc_ws/src/light_curtain_ros/carla_lc/src/carla_lc/")
+        #sys.path.append("/home/raaj/cmu/lc_ws/src/light_curtain_ros/carla_lc/src/carla_lc/")
+        sys.path.append("/home/raaj/lc_ws/src/carla_lc/src/carla_lc")
         from opt_curtain import CurtainOpt
         lightcurtain = CurtainOpt(False, True)
     else:
@@ -309,7 +313,8 @@ def main():
         "dsc_mul": dsc_mul,
         "dc_mul": dc_mul,
         "rsc_mul": rsc_mul,
-        "smooth_mul": smooth_mul
+        "smooth_mul": smooth_mul,
+        "pnoise": pnoise
     }
 
     # Evaluate Model Graph
@@ -443,7 +448,7 @@ def main():
         start = time.time()
 
 
-def generate_model_input(local_info_valid, camside="left", softce=0):
+def generate_model_input(local_info_valid, camside="left", softce=0, pnoise=0):
     # Ensure same size
     valid = (len(local_info_valid[camside + "_cam_intrins"]) == len(
         local_info_valid[camside + "_src_cam_poses"]) == len(local_info_valid["src_dats"]))
@@ -491,6 +496,7 @@ def generate_model_input(local_info_valid, camside="left", softce=0):
         pose = local_info_valid[camside + "_src_cam_poses"][i]
         src_cam_poses_arr.append(pose[:, 0:midval + 1, :, :])  # currently [1x3x4x4]
     src_cam_poses = torch.cat(src_cam_poses_arr)
+    if pnoise: src_cam_poses = util.add_noise2pose(src_cam_poses, pnoise)
 
     mask_imgsize_arr = []
     mask_arr = []
@@ -602,10 +608,10 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             if lightcurtain is not None:
                 if not lightcurtain.pset:
                     params, sensor_setup = lightcurtain.get_basic(baseline=0.2, laser_fov=80,
-                                                                  intrinsics=model_input["intrinsics_up"][0, :,
+                                                                  intrinsics=model_input["intrinsics"][0, :,
                                                                              :].cpu().numpy(),
-                                                                  width=model_input["rgb"].shape[4],
-                                                                  height=model_input["rgb"].shape[3])
+                                                                  width=model_input["rgb"].shape[4]/4,
+                                                                  height=model_input["rgb"].shape[3]/4)
                     lightcurtain.load_data(params, sensor_setup)
 
             # Stuff
@@ -707,40 +713,38 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     # Light Curtain
                     if lightcurtain is not None:
                         arc = lightcurtain.get_arc(22)
-                        lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_np])
+                        lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_low_np])
                         lccloud = np.append(lccloud, np.zeros((lccloud.shape[0], 5)), axis=1)
                         lccloud[:, 4:6] = 50
                         lccloud = util.hack(lccloud)
-                        visualizer.addCloud(lccloud, 2)
+                        visualizer.addCloud(lccloud, 3)
 
                     # Field
                     soft_label_refined = soft_label_refined * depth_mask.float()
-                    #GEN UFIELD TAKE AVERAGE
-                    #CHECK THE PYTORCH THING
                     dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img, True, False)
                     dpv_plane_truth, _ = losses.gen_ufield(soft_label_refined, d_candi, intr_up, visualizer, img, False, True)
 
-                    import matplotlib.pyplot as plt
-                    def plotfig(index):
-                        dist_pred = dpv_plane_predicted[0,:,index].cpu().numpy()
-                        dist_truth = dpv_plane_truth[0, :, index].cpu().numpy()
-                        plt.figure()
-                        plt.plot(np.array(d_candi), dist_pred)
-                        plt.plot(np.array(d_candi), dist_truth)
-                        plt.ion()
-                        plt.pause(0.005)
-                        plt.show()
-                    plotfig(283)
-                    plotfig(345)
-                    # plotfig(24)
-                    # plotfig(187)
+                    # import matplotlib.pyplot as plt
+                    # def plotfig(index):
+                    #     dist_pred = dpv_plane_predicted[0,:,index].cpu().numpy()
+                    #     dist_truth = dpv_plane_truth[0, :, index].cpu().numpy()
+                    #     plt.figure()
+                    #     plt.plot(np.array(d_candi), dist_pred)
+                    #     plt.plot(np.array(d_candi), dist_truth)
+                    #     plt.ion()
+                    #     plt.pause(0.005)
+                    #     plt.show()
+                    # plotfig(283)
+                    # plotfig(345)
+                    # # plotfig(24)
+                    # # plotfig(187)
 
                     cloud = util.tocloud(debugmap.cpu(), img, intr_up, None, [255, 255, 255])
                     visualizer.addCloud(cloud, 3)
                     viz1 = dpv_plane_truth.squeeze(0).cpu().numpy()
                     viz2 = dpv_plane_predicted.squeeze(0).cpu().numpy()
                     truth = ((viz1 * 1)*255).astype(np.uint8)
-                    pred = ((viz2 * 10)*255).astype(np.uint8)
+                    pred = np.clip((viz2 * 5)*255, 0, 255).astype(np.uint8)
                     mask = (pred > 1).astype(np.uint8)
                     pred_col = cv2.cvtColor(pred, cv2.COLOR_GRAY2BGR)
                     for r in range(0, pred.shape[0]):
@@ -755,12 +759,12 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     cloud_orig = util.tocloud(depthmap_predicted_np, img, intr_up, None)
                     cloud_truth = util.tocloud(torch.tensor(depthmap_truth_np[np.newaxis, :]), img, intr_up, None)
                     cloud_low_truth = util.tocloud(torch.tensor(depthmap_truth_low_np[np.newaxis, :]), img_low, intr,
-                                                   None, [0,255,0])
+                                                   None)
                     cv2.imshow("win", combined)
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    # visualizer.addCloud(cloud_low_truth, 3)
-                    # visualizer.addCloud(cloud_truth,1)
+                    #visualizer.addCloud(cloud_low_truth, 3)
+                    #visualizer.addCloud(cloud_truth,1)
                     # visualizer.addCloud(cloud_low_orig, 3)
                     visualizer.addCloud(cloud_orig, 1)
                     #visualizer.addCloud(slicecloud, 2)
@@ -768,6 +772,22 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     visualizer.swapBuffer()
                     key = cv2.waitKey(0)
                     print("--")
+
+                    # # Is this true? Such a low resolution is an incorrect representation of the uncertainty etc.
+                    # """
+                    # need a function where i can test a pixel. i have intensity, groundtruth and z unc
+                    # i can generate a graph from this similar to above (the gt is just to visualize)
+                    # """
+                    # for dist in np.arange(10, 30, 0.01):
+                    #     if lightcurtain is not None:
+                    #         arc = lightcurtain.get_arc(dist)
+                    #         lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_low_np])
+                    #         lccloud = np.append(lccloud, np.zeros((lccloud.shape[0], 5)), axis=1)
+                    #         lccloud[:, 4:6] = 50
+                    #         lccloud = util.hack(lccloud)
+                    #         visualizer.addCloud(lccloud, 3)
+                    #         visualizer.addCloud(cloud_low_truth, 3)
+                    #         visualizer.swapBuffer()
 
         else:
             pass
@@ -792,10 +812,11 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
     dc_mul = addparams["dc_mul"]
     rsc_mul = addparams["rsc_mul"]
     smooth_mul = addparams["smooth_mul"]
+    pnoise = addparams["pnoise"]
 
     # Create inputs
-    model_input_left, gt_input_left = generate_model_input(local_info_valid, "left", softce)
-    model_input_right, gt_input_right = generate_model_input(local_info_valid, "right", softce)
+    model_input_left, gt_input_left = generate_model_input(local_info_valid, "left", softce, pnoise)
+    model_input_right, gt_input_right = generate_model_input(local_info_valid, "right", softce, pnoise)
 
     # Previous
     if prev_output is not None:
