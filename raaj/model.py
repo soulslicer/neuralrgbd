@@ -96,7 +96,7 @@ class KVNET(nn.Module):
 
             # Setup KV Net
             if self.kv_net == None:
-                self.kv_net = submodels.KV_NET_BASIC(kvnet_size, dres_count = 4, feature_dim = 32).cuda()
+                self.kv_net = submodels.KV_NET_BASIC(kvnet_size, dres_count = 2, feature_dim = 32).cuda()
 
             # Compute the cost volume and get features
             BV_cur_base, cost_volumes, d_net_features = self.d_net(model_input)
