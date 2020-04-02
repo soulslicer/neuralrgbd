@@ -73,8 +73,8 @@ def depth_stereo_consistency_loss(src_depth_img, target_depth_img, src_depth_mas
 def depth_consistency_loss(large_dm, small_dm):
     tophalf = torch.ones(small_dm.shape).bool().cuda();
     tophalf[:, 0:tophalf.shape[1] / 3, :] = False
-    downscaled_dm = F.interpolate(large_dm.unsqueeze(0), size=[small_dm.shape[1], small_dm.shape[2]],
-                                  mode='nearest').squeeze(0)
+    #downscaled_dm = F.interpolate(large_dm.unsqueeze(0), size=[small_dm.shape[1], small_dm.shape[2]], mode='nearest').squeeze(0)
+    downscaled_dm = F.max_pool2d(large_dm.unsqueeze(0), 4).squeeze(0)
     small_dm = small_dm.clamp(min=1e-3)
     downscaled_dm = downscaled_dm.clamp(min=1e-3)
     diff_depth = ((downscaled_dm - small_dm).abs() /
