@@ -74,6 +74,10 @@ def load_filenames_from_folder(pre_trained_folder):
     all_files = natural_sort(all_files)
     return all_files
 
+def half_lr(opt):
+    for g in opt.param_groups:
+        g['lr'] /= 2.
+
 def intr_scale(intr, raw_img_size, img_size):
     uchange = float(img_size[0]) / float(raw_img_size[0])
     vchange = float(img_size[1]) / float(raw_img_size[1])

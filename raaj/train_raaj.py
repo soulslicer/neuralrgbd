@@ -375,7 +375,8 @@ def main():
         LOSS = []
         total_iter = -1
 
-    # Load total iter from pretrained
+    # LR Halvings
+    lrhalf = [0.5, 0.9]
 
     # Keep Getting
     start = time.time()
@@ -397,6 +398,13 @@ def main():
             time.sleep(2)
             del b
             break
+
+        # LR Control
+        completion_percentage = float(iepoch)/float(n_epoch)
+        if completion_percentage in lrhalf:
+            print("Halving LR...")
+            lrhalf.remove(completion_percentage)
+            util.half_lr(optimizer_KV)
 
         # import copy
         # local_info = copy.deepcopy(local_info)
@@ -763,9 +771,9 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     cv2.imshow("low", util.torchrgb_to_cv2(img_low, False))
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    visualizer.addCloud(cloud_low_truth, 3)
+                    #visualizer.addCloud(cloud_low_truth, 3)
                     #visualizer.addCloud(cloud_truth,1)
-                    # visualizer.addCloud(cloud_low_orig, 3)
+                    visualizer.addCloud(cloud_low_orig, 3)
                     #visualizer.addCloud(cloud_orig, 1)
                     #visualizer.addCloud(slicecloud, 2)
                     visualizer.addCloud(dcloud, 4)
