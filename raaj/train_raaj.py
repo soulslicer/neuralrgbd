@@ -108,12 +108,14 @@ def main():
     parser.add_argument('--dsc_mul', type=float, default=0., help='Depth Stereo Consistency Loss Multiplier')
     parser.add_argument('--dc_mul', type=float, default=0., help='Depth Consistency Loss Multiplier')
     parser.add_argument('--rsc_mul', type=float, default=0., help='RGB Stereo Consistency Loss Multiplier')
+    parser.add_argument('--rsc_low_mul', type=float, default=0., help='RGB Stereo Low Consistency Loss Multiplier')
     parser.add_argument('--smooth_mul', type=float, default=0., help='Smoothness Loss Multiplier')
     parser.add_argument('--pnoise', type=float, default=0., help='Noise added to pose')
     parser.add_argument('--nmode', type=str, default='default', help='Model Network Mode')
     parser.add_argument('--run_eval', action='store_true', default=False)
     parser.add_argument('--run_model', action='store_true', default=False)
     parser.add_argument('--load_args', action='store_true', default=False)
+    parser.add_argument('--halflr', type=str, default="")
 
     # hack_num = 326
     hack_num = 0
@@ -154,6 +156,7 @@ def main():
     dsc_mul = args.dsc_mul
     dc_mul = args.dc_mul
     rsc_mul = args.rsc_mul
+    rsc_low_mul = args.rsc_low_mul
     softce = args.softce
     lc = args.lc
     pytorch_scaling = args.pytorch_scaling
@@ -172,6 +175,7 @@ def main():
     qpower = args.qpower
     ngpu = args.ngpu
     drefine = args.drefine
+    halflr = [float(x) for x in args.halflr.split()]
 
     # Checks
     # if softce and not pytorch_scaling: raise('Soft CE needs Pytorch scaling to be turned on?')
@@ -313,6 +317,7 @@ def main():
         "dsc_mul": dsc_mul,
         "dc_mul": dc_mul,
         "rsc_mul": rsc_mul,
+        "rsc_low_mul": rsc_low_mul,
         "smooth_mul": smooth_mul,
         "pnoise": pnoise
     }
@@ -375,9 +380,6 @@ def main():
         LOSS = []
         total_iter = -1
 
-    # LR Halvings
-    lrhalf = [0.5, 0.9]
-
     # Keep Getting
     start = time.time()
     prev_output = None
@@ -401,9 +403,9 @@ def main():
 
         # LR Control
         completion_percentage = float(iepoch)/float(n_epoch)
-        if completion_percentage in lrhalf:
+        if completion_percentage in halflr:
             print("Halving LR...")
-            lrhalf.remove(completion_percentage)
+            halflr.remove(completion_percentage)
             util.half_lr(optimizer_KV)
 
         # import copy
@@ -771,9 +773,9 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     cv2.imshow("low", util.torchrgb_to_cv2(img_low, False))
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    #visualizer.addCloud(cloud_low_truth, 3)
+                    visualizer.addCloud(cloud_low_truth, 3)
                     #visualizer.addCloud(cloud_truth,1)
-                    visualizer.addCloud(cloud_low_orig, 3)
+                    #visualizer.addCloud(cloud_low_orig, 3)
                     #visualizer.addCloud(cloud_orig, 1)
                     #visualizer.addCloud(slicecloud, 2)
                     visualizer.addCloud(dcloud, 4)
@@ -819,6 +821,7 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
     dsc_mul = addparams["dsc_mul"]
     dc_mul = addparams["dc_mul"]
     rsc_mul = addparams["rsc_mul"]
+    rsc_low_mul = addparams["rsc_low_mul"]
     smooth_mul = addparams["smooth_mul"]
     pnoise = addparams["pnoise"]
 
@@ -987,6 +990,30 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
                                                                  pose_src2target,
                                                                  intr_up_right)
 
+    # RGB Stereo Consistency Loss (Low res)
+    rsc_low_loss = 0
+    for ibatch in range(BV_cur_left.shape[0]):
+        if ibatch == 0:
+            viz = visualizer
+        else:
+            viz = None
+        if rsc_low_mul == 0: break
+        intr_left = model_input_left["intrinsics"][ibatch, :, :].unsqueeze(0)
+        intr_right = model_input_right["intrinsics"][ibatch, :, :].unsqueeze(0)
+        depth_left = small_dm_left_arr[ibatch]
+        depth_right = small_dm_right_arr[ibatch]
+        rgb_left = F.avg_pool2d(model_input_left["rgb"][ibatch, -1, :, :, :].unsqueeze(0), 4)
+        rgb_right = F.avg_pool2d(model_input_right["rgb"][ibatch, -1, :, :, :].unsqueeze(0), 4)
+        # Right to Left
+        # src_rgb_img, target_rgb_img, target_depth_map, pose_target2src, intr
+        rsc_low_loss = rsc_low_loss + losses.rgb_stereo_consistency_loss(rgb_right, rgb_left, depth_left,
+                                                                 pose_target2src,
+                                                                 intr_left, viz)
+        # Left to Right
+        rsc_low_loss = rsc_low_loss + losses.rgb_stereo_consistency_loss(rgb_left, rgb_right, depth_right,
+                                                                 pose_src2target,
+                                                                 intr_right)
+
     # Smoothness loss (Just on high res)
     smooth_loss = 0
     for ibatch in range(BV_cur_left.shape[0]):
@@ -1007,8 +1034,9 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
     dsc_loss = (dsc_loss / bsize) * dsc_mul
     dc_loss = (dc_loss / bsize) * dc_mul
     rsc_loss = (rsc_loss / bsize) * rsc_mul
+    rsc_low_loss = (rsc_low_loss / bsize) * rsc_low_mul
     smooth_loss = (smooth_loss / bsize) * smooth_mul
-    loss = ce_loss + dsc_loss + dc_loss + rsc_loss + smooth_loss
+    loss = ce_loss + dsc_loss + dc_loss + rsc_loss + rsc_low_loss + smooth_loss
     loss.backward()
     optimizer_KV.step()
 
