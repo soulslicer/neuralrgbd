@@ -210,9 +210,9 @@ def main():
     if lc:
         # CO Stuff
         #sys.path.append("/home/raaj/cmu/lc_ws/src/light_curtain_ros/carla_lc/src/carla_lc/")
-        sys.path.append("/home/raaj/lc_ws/src/carla_lc/src/carla_lc")
-        from opt_curtain import CurtainOpt
-        lightcurtain = CurtainOpt(False, True)
+        sys.path.append("/home/raaj/lcsim/python/")
+        from light_curtain import LightCurtain
+        lightcurtain = LightCurtain(False, True)
     else:
         lightcurtain = None
 
@@ -619,7 +619,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             model_input["prev_output"] = prev_output
             BV_cur_all_arr, BV_cur_refined_all = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
             BV_cur_all = BV_cur_all_arr[-1]
-            prev_output = BV_cur_all
+            prev_output = BV_cur_all.detach()
             # print("Forward: " + str(time.time() - start))
 
             # Truth
@@ -712,7 +712,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
                     # Light Curtain
                     if lightcurtain is not None:
-                        arc = lightcurtain.get_arc(22)
+                        arc = lightcurtain.get_flat(22)
                         lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_low_np])
                         lccloud = np.append(lccloud, np.zeros((lccloud.shape[0], 5)), axis=1)
                         lccloud[:, 4:6] = 50
@@ -753,7 +753,6 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                                 pred_col[r,c,:] = [0,0,255]
                     cv2.imshow("final", pred_col)
 
-
                     # Cloud
                     cloud_low_orig = util.tocloud(depthmap_low_predicted_np, img_low, intr, None)
                     cloud_orig = util.tocloud(depthmap_predicted_np, img, intr_up, None)
@@ -761,12 +760,13 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     cloud_low_truth = util.tocloud(torch.tensor(depthmap_truth_low_np[np.newaxis, :]), img_low, intr,
                                                    None)
                     cv2.imshow("win", combined)
+                    cv2.imshow("low", util.torchrgb_to_cv2(img_low, False))
                     print(cloud_orig.shape)
                     print(slicecloud.shape)
-                    #visualizer.addCloud(cloud_low_truth, 3)
+                    visualizer.addCloud(cloud_low_truth, 3)
                     #visualizer.addCloud(cloud_truth,1)
                     # visualizer.addCloud(cloud_low_orig, 3)
-                    visualizer.addCloud(cloud_orig, 1)
+                    #visualizer.addCloud(cloud_orig, 1)
                     #visualizer.addCloud(slicecloud, 2)
                     visualizer.addCloud(dcloud, 4)
                     visualizer.swapBuffer()

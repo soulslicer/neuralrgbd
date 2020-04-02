@@ -212,7 +212,7 @@ def gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img, BV_log=True, no
     depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=BV_log)
 
     # Get Mask for Pts within Y range
-    maxd = 40. # Issue, currentnetwork puts maxrange wrong
+    maxd = 100. # This is bad as i dont want zero regions. so i max it out now
     pts_shifted = util.depth_to_pts(depthmap_shifted, intr_up)
     #zero_mask = (~((pts_shifted[1,:,:] > 1.4) | (pts_shifted[1,:,:] < -1.0))).float()
     #zero_mask = (~((pts_shifted[1, :, :] > 1.3) | (pts_shifted[1, :, :] < 1.0))).float()

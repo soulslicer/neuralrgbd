@@ -529,10 +529,14 @@ class KITTI_dataset(data.Dataset):
                 small_intr = util.intr_scale(intr_raw_append, raw_img_size, small_size)
 
                 # Generate Depth maps
-                large_params = {"filtering": 2, "upsample": 0}
+                large_params = {"filtering": 2, "upsample": 2}
                 dmap_large = kittiutils.generate_depth(velodata, large_intr, M_velo2cam, large_size[0], large_size[1], large_params)
                 small_params = {"filtering": 0, "upsample": 0}
                 dmap_small = kittiutils.generate_depth(velodata, small_intr, M_velo2cam, small_size[0], small_size[1], small_params)
+
+                # Hack
+                print("Hacked Small DMap. And Hacked the RGB Scaling Mode")
+                dmap_small = F.interpolate(torch.Tensor(dmap_large).unsqueeze(0).unsqueeze(0), size=[small_size[1], small_size[0]], mode='nearest').squeeze(0).squeeze(0).numpy()
 
                 # Change names
                 dmap_imgsize = dmap_large
