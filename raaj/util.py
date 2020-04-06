@@ -74,6 +74,16 @@ def load_filenames_from_folder(pre_trained_folder):
     all_files = natural_sort(all_files)
     return all_files
 
+def minpool(tensor, scale, default=0):
+    if default:
+        tensor_copy = tensor.clone()
+        tensor_copy[tensor_copy == 0] = default
+        tensor_small = -F.max_pool2d(-tensor_copy, scale)
+        tensor_small[tensor_small == default] = 0
+    else:
+        tensor_small = -F.max_pool2d(-tensor, scale)
+    return tensor_small
+
 def half_lr(opt):
     for g in opt.param_groups:
         g['lr'] /= 2.

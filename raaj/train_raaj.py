@@ -213,10 +213,8 @@ def main():
 
     if lc:
         # CO Stuff
-        #sys.path.append("/home/raaj/cmu/lc_ws/src/light_curtain_ros/carla_lc/src/carla_lc/")
-        sys.path.append("/home/raaj/lcsim/python/")
         from light_curtain import LightCurtain
-        lightcurtain = LightCurtain(False, True)
+        lightcurtain = LightCurtain()
     else:
         lightcurtain = None
 
@@ -613,16 +611,23 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             model_input_right, gt_input_right = generate_model_input(local_info_valid, "right")
 
             # Create LC output
-            # def get_basic(self, baseline=0.2, laser_fov=80, intrinsics=[400., 0., 256, 0., 400., 256., 0., 0., 1.],
-            #              width=512, height=512, distortion=[0.000000, 0.000000, 0.000000, 0.000000, 0.000000]):
+            # Right now assume r_candi = d_candi
             if lightcurtain is not None:
-                if not lightcurtain.pset:
-                    params, sensor_setup = lightcurtain.get_basic(baseline=0.2, laser_fov=80,
-                                                                  intrinsics=model_input["intrinsics"][0, :,
-                                                                             :].cpu().numpy(),
-                                                                  width=model_input["rgb"].shape[4]/4,
-                                                                  height=model_input["rgb"].shape[3]/4)
-                    lightcurtain.load_data(params, sensor_setup)
+                lightcurtain.init(
+                    CAMERA_PARAMS={
+                        'width': model_input["rgb"].shape[4] / 4,
+                        'height': model_input["rgb"].shape[3] / 4,
+                        'matrix': model_input["intrinsics"][0, :, :].cpu().numpy(),
+                        'distortion': [0., 0., 0., 0., 0.],
+                        'hit_mode': 1,
+                        'hit_noise': 0.01
+                    },
+                    LASER_PARAMS={
+                        'y': -0.2,  # place laser 20cm to the right of camera
+                        'fov': 80.
+                    },
+                    r_candi=d_candi
+                )
 
             # Stuff
             start = time.time()
@@ -722,9 +727,11 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
                     # Light Curtain
                     if lightcurtain is not None:
-                        arc = lightcurtain.get_flat(22)
-                        lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_low_np])
-                        lccloud = np.append(lccloud, np.zeros((lccloud.shape[0], 5)), axis=1)
+                        path = lightcurtain.get_flat(22)
+                        output = lightcurtain.sense(depthmap_truth_low_np, path)
+                        output[np.isnan(output[:,:,0])] = 0
+                        output = output.reshape((output.shape[0]*output.shape[1], 4))
+                        lccloud = np.append(output, np.zeros((output.shape[0], 5)), axis=1)
                         lccloud[:, 4:6] = 50
                         lccloud = util.hack(lccloud)
                         visualizer.addCloud(lccloud, 3)
@@ -790,9 +797,11 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     # """
                     # for dist in np.arange(10, 30, 0.01):
                     #     if lightcurtain is not None:
-                    #         arc = lightcurtain.get_arc(dist)
-                    #         lccloud, npimgs = lightcurtain.compute([arc], [depthmap_truth_low_np])
-                    #         lccloud = np.append(lccloud, np.zeros((lccloud.shape[0], 5)), axis=1)
+                    #         path = lightcurtain.get_flat(dist)
+                    #         output = lightcurtain.sense(depthmap_truth_low_np, path)
+                    #         output[np.isnan(output[:,:,0])] = 0
+                    #         output = output.reshape((output.shape[0]*output.shape[1], 4))
+                    #         lccloud = np.append(output, np.zeros((output.shape[0], 5)), axis=1)
                     #         lccloud[:, 4:6] = 50
                     #         lccloud = util.hack(lccloud)
                     #         visualizer.addCloud(lccloud, 3)

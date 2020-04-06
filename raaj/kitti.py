@@ -537,8 +537,9 @@ class KITTI_dataset(data.Dataset):
                 # Hack
                 #print("Hacked Small DMap. And Hacked the RGB Scaling Mode")
                 #dmap_small = F.interpolate(torch.Tensor(dmap_large).unsqueeze(0).unsqueeze(0), size=[small_size[1], small_size[0]], mode='nearest').squeeze(0).squeeze(0).numpy()
-                dmap_small = F.max_pool2d(torch.Tensor(dmap_large).unsqueeze(0).unsqueeze(0), 4).squeeze(0).squeeze(0).numpy()
+                #dmap_small = F.max_pool2d(torch.Tensor(dmap_large).unsqueeze(0).unsqueeze(0), 4).squeeze(0).squeeze(0).numpy()
                 #dmap_small = F.adaptive_max_pool2d(torch.Tensor(dmap_large).unsqueeze(0).unsqueeze(0), [small_size[1], small_size[0]]).squeeze(0).squeeze(0).numpy()
+                dmap_small = util.minpool(torch.Tensor(dmap_large).unsqueeze(0).unsqueeze(0), 4, 1000).squeeze(0).squeeze(0).numpy()
 
                 # Change names
                 dmap_imgsize = dmap_large
