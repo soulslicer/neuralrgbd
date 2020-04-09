@@ -17,6 +17,7 @@ import torch.nn.functional as F
 import torchvision
 import kitti
 import cv2
+import inverse_warp as iv
 
 def load_pretrained_model(model, pretrained_path, optimizer = None):
     r'''
@@ -96,6 +97,12 @@ def intr_scale(intr, raw_img_size, img_size):
     intr_small[1, :] *= vchange
     return intr_small
 
+def intr_scale_unit(intr, scale=1.):
+    intr_small = intr.copy()
+    intr_small[0, :] *= scale
+    intr_small[1, :] *= scale
+    return intr_small
+
 def powerf(d_min, d_max, nDepth, power):
     f = lambda x: d_min + (d_max - d_min) * x
     x = np.linspace(start=0, stop=1, num=nDepth)
@@ -109,6 +116,54 @@ def hack(cloud):
         fcloud[i] = cloud[i]
     return fcloud
 
+def transform_depth(depth, intr, transform):
+    # torch.Size([2, 64, 96])
+    # torch.Size([2, 3, 3])
+    # torch.Size([2, 4, 4])
+
+    # Extract
+    fx = intr[0,0]
+    cx = intr[0,2]
+    fy = intr[1,1]
+    cy = intr[1,2]
+
+    # Generate Field
+    yfield, xfield = torch.meshgrid([torch.arange(0, depth.shape[1]).float().to(depth.device),
+                                     torch.arange(0, depth.shape[2]).float().to(depth.device)])
+    yfield = (yfield - cy) / fy
+    xfield = (xfield - cx) / fx
+    X = torch.mul(depth, xfield)
+    Y = torch.mul(depth, yfield)
+    Z = depth
+    ones = torch.ones(depth.shape).to(depth.device)
+
+    # Transform it
+    depth_mask = (depth > 0).float()
+    ptcloud = torch.cat([X.unsqueeze(1),Y.unsqueeze(1),Z.unsqueeze(1),ones.unsqueeze(1)], 1)
+    ptcloud = ptcloud.view((ptcloud.shape[0], ptcloud.shape[1], ptcloud.shape[2]*ptcloud.shape[3]))
+    ptcloud = torch.matmul(transform, ptcloud)
+    ptcloud = ptcloud.view((depth.shape[0], 4, depth.shape[1], depth.shape[2]))
+    depth_transformed = ptcloud[:,2,:,:]
+    depth_transformed = depth_transformed * depth_mask
+
+    # Shift Pixels
+    depth_transformed_rep = depth_transformed.unsqueeze(1)
+    intr_rep = intr.unsqueeze(0).repeat(depth.shape[0], 1, 1)
+    target_warped_depth_img, valid_points = iv.inverse_warp(depth_transformed_rep, depth_transformed,
+                                                            transform, intr_rep, 'nearest')
+    depth_warped = target_warped_depth_img.squeeze(1)
+
+    return depth_warped
+
+def lctocloud(lcpath, color=[0, 255, 0]):
+    pathcloud = np.zeros((lcpath.shape[0], 9))
+    pathcloud[:, 0] = lcpath[:, 0]
+    pathcloud[:, 1] = -1
+    pathcloud[:, 2] = lcpath[:, 1]
+    pathcloud[:, 3:6] = color
+    pathcloud = hack(pathcloud)
+    return pathcloud
+
 def tocloud(depth, rgb, intr, extr=None, rgbr=None):
     pts = depth_to_pts(depth, intr)
     pts = pts.reshape((3, pts.shape[1] * pts.shape[2]))
@@ -119,10 +174,10 @@ def tocloud(depth, rgb, intr, extr=None, rgbr=None):
     if extr is not None:
         transform = torch.inverse(extr)
         pts = torch.matmul(transform, pts)
-    pts_numpy = pts[0:3, :].numpy()
+    pts_numpy = pts[0:3, :].cpu().numpy()
 
     # Convert Color
-    pts_color = rgb.reshape((3, rgb.shape[1] * rgb.shape[2])) * 255
+    pts_color = (rgb.reshape((3, rgb.shape[1] * rgb.shape[2])) * 255).cpu().numpy()
     pts_normal = np.zeros((3, rgb.shape[1] * rgb.shape[2]))
 
     # RGBR
@@ -135,6 +190,14 @@ def tocloud(depth, rgb, intr, extr=None, rgbr=None):
     all_together = np.concatenate([pts_numpy, pts_color, pts_normal], 0).astype(np.float32).T
     all_together = hack(all_together)
     return all_together
+
+
+def demean(input):
+    input = input.detach().clone()
+    input[0, :, :] = input[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+    input[1, :, :] = input[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+    input[2, :, :] = input[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+    return input
 
 def torchrgb_to_cv2(input, demean=True):
     input = input.detach().clone()

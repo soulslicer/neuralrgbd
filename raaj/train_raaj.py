@@ -613,21 +613,31 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             # Create LC output
             # Right now assume r_candi = d_candi
             if lightcurtain is not None:
-                lightcurtain.init(
-                    CAMERA_PARAMS={
-                        'width': model_input["rgb"].shape[4] / 4,
-                        'height': model_input["rgb"].shape[3] / 4,
-                        'matrix': model_input["intrinsics"][0, :, :].cpu().numpy(),
-                        'distortion': [0., 0., 0., 0., 0.],
-                        'hit_mode': 1,
-                        'hit_noise': 0.01
-                    },
-                    LASER_PARAMS={
-                        'y': -0.2,  # place laser 20cm to the right of camera
-                        'fov': 80.
-                    },
-                    r_candi=d_candi
-                )
+                if not lightcurtain.initialized:
+                    PARAMS={
+                        "intr_rgb": model_input["intrinsics_up"][0, :, :].cpu().numpy(),
+                        "dist_rgb": [0., 0., 0., 0., 0.],
+                        "size_rgb": [model_input["rgb"].shape[4], model_input["rgb"].shape[3]],
+                        "intr_lc": model_input["intrinsics_up"][0, :, :].cpu().numpy(),
+                        "dist_lc": [0., 0., 0., 0., 0.],
+                        "size_lc": [model_input["rgb"].shape[4], model_input["rgb"].shape[3]],
+                        "rTc": np.array([
+                                [1., 0., 0., 0.],
+                                [0., 1., 0., 0.],
+                                [0., 0., 1., 0.],
+                                [0., 0., 0., 1.],
+                            ]).astype(np.float32),
+                        "lTc": np.array([
+                                [1., 0., 0., 0.2],
+                                [0., 1., 0., 0.],
+                                [0., 0., 1., 0.],
+                                [0., 0., 0., 1.],
+                            ]).astype(np.float32),
+                        "laser_fov": 80.,
+                        "d_candi": d_candi,
+                        "r_candi": d_candi
+                    }
+                    lightcurtain.init(PARAMS)
 
             # Stuff
             start = time.time()
@@ -646,17 +656,18 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             depth_mask_low_all = gt_input["masks"][:, :, :, :].float()
 
             # Batch
-            start = time.time()
             bsize = BV_cur_refined_all.shape[0]
             pose_target2src = local_info_valid["T_left2right"].unsqueeze(0).cuda()
             for b in range(bsize):
+                start = time.time()
                 BV_cur = BV_cur_all[b, :, :, :].unsqueeze(0)
                 BV_cur_refined = BV_cur_refined_all[b, :, :, :].unsqueeze(0)
                 depthmap_truth = depthmap_truth_all[b, :, :].unsqueeze(0)
                 depthmap_truth_low = depthmap_truth_low_all[b, :, :].unsqueeze(0)
                 depth_mask = depth_mask_all[b, :, :, :]
                 depth_mask_low = depth_mask_low_all[b, :, :, :]
-                intr = model_input["intrinsics_up"][b, :, :].unsqueeze(0)
+                intr_up = model_input["intrinsics_up"][b, :, :].unsqueeze(0)
+                intr = model_input["intrinsics"][b, :, :].unsqueeze(0)
                 left_rgb = model_input["rgb"][b, -1, :, :, :].unsqueeze(0)
                 right_rgb = model_input_right["rgb"][b, -1, :, :, :].unsqueeze(0)
                 soft_label_refined = gt_input["soft_labels_imgsize"][b].unsqueeze(0)
@@ -668,12 +679,9 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 depthmap_predicted = util.dpv_to_depthmap(dpv_predicted, d_candi, BV_log=True)  # [1,256,384]
                 depthmap_low_predicted = util.dpv_to_depthmap(dpv_low_predicted, d_candi, BV_log=True)  # [1,256,384]
 
-                # Generate UField (Need to iterate for all)
-                # losses.gen_ufield(dpv_predicted, d_candi, intr, visualizer)
-
                 # Losses
                 rsc_sum += losses.rgb_stereo_consistency_loss(right_rgb, left_rgb, depthmap_predicted,
-                                                              pose_target2src, intr)
+                                                              pose_target2src, intr_up)
                 smooth_sum += losses.edge_aware_smoothness_loss([depthmap_predicted.unsqueeze(0)], left_rgb, 1)
                 dc_sum += losses.depth_consistency_loss(depthmap_predicted, depthmap_low_predicted)
                 counter += 1
@@ -694,6 +702,52 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 all_errors.append(errors)
                 all_errors_low.append(errors_low)
 
+                # # Test Transform
+                # transform = iv.pose_vec2mat_full(torch.Tensor([0., 0., 0., 0.0, 0.0, 0.]).unsqueeze(0).repeat(2,1)).cuda()
+                # print(transform)
+                # depthmaps = depthmap_truth_low.repeat(2,1,1).cuda()
+                # intrinsics = intr.squeeze(0).cuda()
+                # depthmaps_transformed = util.transform_depth(depthmaps, intrinsics, transform)
+
+                # Field
+                dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted, d_candi, intr_up.squeeze(0), visualizer, img=None)
+                dpv_plane_predicted = dpv_plane_predicted.squeeze(0)
+
+                # Light Curtain
+                if lightcurtain is not None:
+                    lc_paths, field_visual = lightcurtain.plan(dpv_plane_predicted)
+
+
+
+                # Visualization
+
+                rgbimg = util.torchrgb_to_cv2(left_rgb.squeeze(0))
+                rgbimg[:,:,0] += debugmap.squeeze(0).cpu().numpy()
+                cv2.imshow("rgbimg", rgbimg)
+
+                if lightcurtain is not None:
+                    cv2.imshow("field_visual", field_visual)
+
+                    visualizer.addCloud(util.lctocloud(lc_paths[0]), 3)
+                    visualizer.addCloud(util.lctocloud(lc_paths[1], [255,0,0]), 3)
+                    visualizer.addCloud(util.lctocloud(lc_paths[2], [255, 0, 0]), 3)
+
+                # I need to deal with the transforms. What is the XZ Position actually
+                # Or does it matter, cos its anyway fed into the system
+
+                # Test trying to increase the depth res
+
+                b = 0
+                cloud_truth = util.tocloud(depthmap_truth, util.demean(left_rgb[b,:,:,:]), intr_up[b,:,:], None)
+                visualizer.addCloud(cloud_truth)
+
+                cv2.waitKey(1)
+                visualizer.swapBuffer()
+
+
+                print("End: " + str(time.time() - start))
+                continue
+
                 # Viz
                 if visualizer is not None and b == 0:
                     intr_up = model_input["intrinsics_up"][b, :, :].cpu()
@@ -702,17 +756,6 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     depthmap_low_predicted_np = (depthmap_low_predicted * 1).cpu()
                     depthmap_predicted_np[:, 0:depthmap_predicted_np.shape[1] / 2, :] = 0
                     depthmap_low_predicted_np[:, 0:depthmap_low_predicted_np.shape[1] / 2, :] = 0
-
-                    # Visualize side Cloud
-                    # subslice = util.dpv_to_xyz(torch.exp(dpv_low_predicted), d_candi, intr, 3, 1)  # torch.Size([24576, 4])
-                    subslice = util.dpv_to_xyz(torch.exp(dpv_predicted), d_candi, intr_up, 30,31)  # torch.Size([24576, 4])
-                    slicecloud = np.zeros((subslice.shape[0], 9)).astype(np.float32)
-                    slicecloud[:, 0:3] = subslice[:, 0:3]
-                    subslice[:, 3] = (subslice[:, 3] - torch.min(subslice[:, 3])) / (
-                            torch.max(subslice[:, 3]) - torch.min(subslice[:, 3]))
-                    slicecloud[:, 3] = subslice[:, 3] * 255
-                    slicecloud[:, 4] = 0
-                    slicecloud[:, 5] = 50
 
                     # Get Image
                     img = model_input["rgb"][b, -1, :, :, :].cpu()  # [1,3,256,384]
@@ -725,21 +768,36 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     combined = np.hstack([img_color, img_depth])
                     print(combined.shape)
 
-                    # Light Curtain
+                    # Light Curtain Path Raw
                     if lightcurtain is not None:
-                        path = lightcurtain.get_flat(22)
-                        output = lightcurtain.sense(depthmap_truth_low_np, path)
-                        output[np.isnan(output[:,:,0])] = 0
-                        output = output.reshape((output.shape[0]*output.shape[1], 4))
-                        lccloud = np.append(output, np.zeros((output.shape[0], 5)), axis=1)
-                        lccloud[:, 4:6] = 50
-                        lccloud = util.hack(lccloud)
-                        visualizer.addCloud(lccloud, 3)
+                        # We must draw the full path here
+                        planned_path = lc_paths[0]
+                        pathcloud = np.zeros((planned_path.shape[0], 9))
+                        pathcloud[:,0] = planned_path[:,0]
+                        pathcloud[:, 1] = -1
+                        pathcloud[:, 2] = planned_path[:, 1]
+                        pathcloud[:, 3:5] = 255
+                        pathcloud = util.hack(pathcloud)
+                        visualizer.addCloud(pathcloud, 3)
 
-                    # Field
-                    soft_label_refined = soft_label_refined * depth_mask.float()
-                    dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img, True, False)
-                    dpv_plane_truth, _ = losses.gen_ufield(soft_label_refined, d_candi, intr_up, visualizer, img, False, True)
+                        #Looks bad. Do an experiemnt and how it would be with more discretization? smooth it
+
+                    # # Light Curtain
+                    # if lightcurtain is not None:
+                    #     #path = lightcurtain.get_flat(22)
+                    #     #output = lightcurtain.sense_low(depthmap_truth_low_np, lc_paths[0])
+                    #     output = lightcurtain.sense_high(depthmap_truth_np, lc_paths[0])
+                    #     output[np.isnan(output[:,:,0])] = 0
+                    #     output = output.reshape((output.shape[0]*output.shape[1], 4))
+                    #     lccloud = np.append(output, np.zeros((output.shape[0], 5)), axis=1)
+                    #     lccloud[:, 4:6] = 50
+                    #     lccloud = util.hack(lccloud)
+                    #     visualizer.addCloud(lccloud, 3)
+
+                    # # Field
+                    # soft_label_refined = soft_label_refined * depth_mask.float()
+                    # dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img, True, False)
+                    # dpv_plane_truth, _ = losses.gen_ufield(soft_label_refined, d_candi, intr_up, visualizer, img, False, True)
 
                     # import matplotlib.pyplot as plt
                     # def plotfig(index):
@@ -756,19 +814,19 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     # # plotfig(24)
                     # # plotfig(187)
 
-                    cloud = util.tocloud(debugmap.cpu(), img, intr_up, None, [255, 255, 255])
-                    visualizer.addCloud(cloud, 3)
-                    viz1 = dpv_plane_truth.squeeze(0).cpu().numpy()
-                    viz2 = dpv_plane_predicted.squeeze(0).cpu().numpy()
-                    truth = ((viz1 * 1)*255).astype(np.uint8)
-                    pred = np.clip((viz2 * 5)*255, 0, 255).astype(np.uint8)
-                    mask = (pred > 1).astype(np.uint8)
-                    pred_col = cv2.cvtColor(pred, cv2.COLOR_GRAY2BGR)
-                    for r in range(0, pred.shape[0]):
-                        for c in range(0, pred.shape[1]):
-                            if truth[r,c] > 1:
-                                pred_col[r,c,:] = [0,0,255]
-                    cv2.imshow("final", pred_col)
+                    # cloud = util.tocloud(debugmap.cpu(), img, intr_up, None, [255, 255, 255])
+                    # #visualizer.addCloud(cloud, 3)
+                    # viz1 = dpv_plane_truth.squeeze(0).cpu().numpy()
+                    # viz2 = dpv_plane_predicted.squeeze(0).cpu().numpy()
+                    # truth = ((viz1 * 1)*255).astype(np.uint8)
+                    # pred = np.clip((viz2 * 5)*255, 0, 255).astype(np.uint8)
+                    # mask = (pred > 1).astype(np.uint8)
+                    # pred_col = cv2.cvtColor(pred, cv2.COLOR_GRAY2BGR)
+                    # for r in range(0, pred.shape[0]):
+                    #     for c in range(0, pred.shape[1]):
+                    #         if truth[r,c] > 1:
+                    #             pred_col[r,c,:] = [0,0,255]
+                    # cv2.imshow("final", pred_col)
 
                     # Cloud
                     cloud_low_orig = util.tocloud(depthmap_low_predicted_np, img_low, intr, None)
@@ -777,11 +835,9 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     cloud_low_truth = util.tocloud(torch.tensor(depthmap_truth_low_np[np.newaxis, :]), img_low, intr,
                                                    None)
                     cv2.imshow("win", combined)
-                    cv2.imshow("low", util.torchrgb_to_cv2(img_low, False))
                     print(cloud_orig.shape)
-                    print(slicecloud.shape)
-                    visualizer.addCloud(cloud_low_truth, 3)
-                    #visualizer.addCloud(cloud_truth,1)
+                    #visualizer.addCloud(cloud_low_truth, 3)
+                    visualizer.addCloud(cloud_truth,1)
                     #visualizer.addCloud(cloud_low_orig, 3)
                     #visualizer.addCloud(cloud_orig, 1)
                     #visualizer.addCloud(slicecloud, 2)

@@ -151,6 +151,25 @@ def pose_vec2mat(vec, rotation_mode='euler'):
     transform_mat = torch.cat([rot_mat, translation], dim=2)  # [B, 3, 4]
     return transform_mat
 
+def pose_vec2mat_full(vec, rotation_mode='euler'):
+    """
+    Convert 6DoF parameters to transformation matrix.
+
+    Args:s
+        vec: 6DoF parameters in the order of tx, ty, tz, rx, ry, rz -- [B, 6]
+    Returns:
+        A transformation matrix -- [B, 3, 4]
+    """
+    translation = vec[:, :3].unsqueeze(-1)  # [B, 3, 1]
+    rot = vec[:,3:]
+    if rotation_mode == 'euler':
+        rot_mat = euler2mat(rot)  # [B, 3, 3]
+    elif rotation_mode == 'quat':
+        rot_mat = quat2mat(rot)  # [B, 3, 3]
+    transform_mat = torch.cat([rot_mat, translation], dim=2)  # [B, 3, 4]
+    ones = torch.Tensor([0, 0, 0, 1]).unsqueeze(0).repeat(vec.shape[0],1,1).to(vec.device)
+    transform_mat = torch.cat([transform_mat, ones], dim=1)
+    return transform_mat
 
 def inverse_warp(img, depth, pose, intrinsics, mode='bilinear', rotation_mode='euler', padding_mode='zeros'):
     """

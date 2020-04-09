@@ -26,7 +26,7 @@ class Visualizer(threading.Thread):
             # your code
             #print self.name, "is active"
             self.visualizer.loop()
-            time.sleep(0.001)
+            time.sleep(0.1)
 
     def addCloud(self, cloud, size=1):
         self.visualizer.addCloud(cloud, size)
