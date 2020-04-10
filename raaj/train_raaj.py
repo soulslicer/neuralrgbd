@@ -186,7 +186,7 @@ def main():
 
     # Quad
     d_candi = util.powerf(args.d_min, args.d_max, nDepth, qpower)
-    d_candi_up = util.powerf(args.d_min, args.d_max, nDepth * 4, qpower)
+    d_candi_up = util.powerf(args.d_min, args.d_max, nDepth * 2, qpower)
 
     LR = args.LR
     sigma_soft_max = args.sigma_soft_max  # 10.#500.
@@ -635,7 +635,9 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                             ]).astype(np.float32),
                         "laser_fov": 80.,
                         "d_candi": d_candi,
-                        "r_candi": d_candi
+                        "r_candi": d_candi,
+                        "d_candi_up": d_candi_up,
+                        "r_candi_up": d_candi_up
                     }
                     lightcurtain.init(PARAMS)
 
@@ -715,9 +717,15 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
 
                 # Light Curtain
                 if lightcurtain is not None:
+                    # Plan
                     lc_paths, field_visual = lightcurtain.plan(dpv_plane_predicted)
 
-
+                    # Sense
+                    lc_outputs = []
+                    for lc_path in lc_paths:
+                        output = lightcurtain.sense_high(depthmap_truth_np, lc_path)
+                        output[np.isnan(output[:, :, 0])] = 0
+                        lc_outputs.append(output)
 
                 # Visualization
 
@@ -728,9 +736,16 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 if lightcurtain is not None:
                     cv2.imshow("field_visual", field_visual)
 
-                    visualizer.addCloud(util.lctocloud(lc_paths[0]), 3)
-                    visualizer.addCloud(util.lctocloud(lc_paths[1], [255,0,0]), 3)
-                    visualizer.addCloud(util.lctocloud(lc_paths[2], [255, 0, 0]), 3)
+
+                    visualizer.addCloud(util.lcpath_to_cloud(lc_paths[0]), 3)
+                    visualizer.addCloud(util.lcpath_to_cloud(lc_paths[1], [255,0,0]), 3)
+                    visualizer.addCloud(util.lcpath_to_cloud(lc_paths[2], [255, 0, 0]), 3)
+
+                    visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[0]), 3)
+                    #visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[1]), 3)
+                    #visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[2]), 3)
+
+                    #cv2.imshow("lc", lc_outputs[0][:,:,3]/255.)
 
                 # I need to deal with the transforms. What is the XZ Position actually
                 # Or does it matter, cos its anyway fed into the system
@@ -741,8 +756,9 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 cloud_truth = util.tocloud(depthmap_truth, util.demean(left_rgb[b,:,:,:]), intr_up[b,:,:], None)
                 visualizer.addCloud(cloud_truth)
 
-                cv2.waitKey(1)
+
                 visualizer.swapBuffer()
+                cv2.waitKey(1)
 
 
                 print("End: " + str(time.time() - start))

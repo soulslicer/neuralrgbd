@@ -155,7 +155,7 @@ def transform_depth(depth, intr, transform):
 
     return depth_warped
 
-def lctocloud(lcpath, color=[0, 255, 0]):
+def lcpath_to_cloud(lcpath, color=[0, 255, 0]):
     pathcloud = np.zeros((lcpath.shape[0], 9))
     pathcloud[:, 0] = lcpath[:, 0]
     pathcloud[:, 1] = -1
@@ -163,6 +163,14 @@ def lctocloud(lcpath, color=[0, 255, 0]):
     pathcloud[:, 3:6] = color
     pathcloud = hack(pathcloud)
     return pathcloud
+
+def lcoutput_to_cloud(output):
+    output[np.isnan(output[:, :, 0])] = 0
+    output = output.reshape((output.shape[0] * output.shape[1], 4))
+    lccloud = np.append(output, np.zeros((output.shape[0], 5)), axis=1)
+    lccloud[:, 4:6] = 50
+    lccloud = hack(lccloud)
+    return lccloud
 
 def tocloud(depth, rgb, intr, extr=None, rgbr=None):
     pts = depth_to_pts(depth, intr)
