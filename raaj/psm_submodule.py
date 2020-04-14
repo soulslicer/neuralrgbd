@@ -83,42 +83,48 @@ class feature_extraction(nn.Module):
 
         super(feature_extraction, self).__init__()
 
-        self.inplanes = 32
+        MUL = feature_dim/64.
+        S0 = int(16*MUL)
+        S1 = int(32*MUL)
+        S2 = int(64*MUL)
+        S3 = int(128*MUL)
+
+        self.inplanes = S1
         self.multi_scale = multi_scale
 
         bn_ravg = bn_running_avg
-        self.firstconv = nn.Sequential(convbn(3, 32, 3, 2, 1, 1, bn_ravg), nn.ReLU(inplace=True),
-                                       convbn(32, 32, 3, 1, 1, 1, bn_ravg), nn.ReLU(inplace=True),
-                                       convbn(32, 32, 3, 1, 1, 1, bn_ravg), nn.ReLU(inplace=True))
+        self.firstconv = nn.Sequential(convbn(3, S1, 3, 2, 1, 1, bn_ravg), nn.ReLU(inplace=True),
+                                       convbn(S1, S1, 3, 1, 1, 1, bn_ravg), nn.ReLU(inplace=True),
+                                       convbn(S1, S1, 3, 1, 1, 1, bn_ravg), nn.ReLU(inplace=True))
 
-        self.layer1 = self._make_layer(BasicBlock, 32, 3, 1,1,1)
-        self.layer2 = self._make_layer(BasicBlock, 64, 16, 2,1,1) 
+        self.layer1 = self._make_layer(BasicBlock, S1, 3, 1,1,1)
+        self.layer2 = self._make_layer(BasicBlock, S2, S0, 2,1,1)
 
         #Chao: this is different from the dilation in the paper (2)
-        self.layer3 = self._make_layer(BasicBlock, 128, 3, 1,1,1) 
+        self.layer3 = self._make_layer(BasicBlock, S3, 3, 1,1,1)
 
         #Chao: in the paper, this is 4
-        self.layer4 = self._make_layer(BasicBlock, 128, 3, 1,1,2) 
+        self.layer4 = self._make_layer(BasicBlock, S3, 3, 1,1,2)
 
         self.branch1 = nn.Sequential(nn.AvgPool2d((64, 64), stride=(64,64)),
-                                     convbn(128, 32, 1, 1, 0, 1, bn_ravg),
+                                     convbn(S3, S1, 1, 1, 0, 1, bn_ravg),
                                      nn.ReLU(inplace=True))
 
         self.branch2 = nn.Sequential(nn.AvgPool2d((32, 32), stride=(32,32)),
-                                     convbn(128, 32, 1, 1, 0, 1, bn_ravg),
+                                     convbn(S3, S1, 1, 1, 0, 1, bn_ravg),
                                      nn.ReLU(inplace=True))
 
         self.branch3 = nn.Sequential(nn.AvgPool2d((16, 16), stride=(16,16)),
-                                     convbn(128, 32, 1, 1, 0, 1, bn_ravg),
+                                     convbn(S3, S1, 1, 1, 0, 1, bn_ravg),
                                      nn.ReLU(inplace=True))
 
         self.branch4 = nn.Sequential(nn.AvgPool2d((8, 8), stride=(8,8)),
-                                     convbn(128, 32, 1, 1, 0, 1, bn_ravg),
+                                     convbn(S3, S1, 1, 1, 0, 1, bn_ravg),
                                      nn.ReLU(inplace=True))
 
-        self.lastconv = nn.Sequential(convbn(320, 128, 3, 1, 1, 1, bn_ravg),
+        self.lastconv = nn.Sequential(convbn(S1*4 + S2 + S3, S3, 3, 1, 1, 1, bn_ravg),
                                       nn.ReLU(inplace=True),
-                                      nn.Conv2d(128, 
+                                      nn.Conv2d(S3,
                                           feature_dim, kernel_size=1, padding=0, stride = 1, bias=False))
 
     def _make_layer(self, block, planes, blocks, stride, pad, dilation):
@@ -160,7 +166,7 @@ class feature_extraction(nn.Module):
 
         output_feature = torch.cat((output_raw, output_skip, output_branch4, output_branch3, output_branch2, output_branch1), 1) 
         output_feature = self.lastconv(output_feature) 
-        
+
         if self.multi_scale:
             return output_layer1, output_feature
         else:
