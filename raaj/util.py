@@ -215,27 +215,30 @@ def torchrgb_to_cv2(input, demean=True):
         input[2, :, :] = input[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
     return cv2.cvtColor(input[:, :, :].cpu().numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
 
-def gaussian_torch(x, mu, sig):
-    return torch.exp(-torch.pow(x - mu, 2.) / (2 * np.power(sig, 2.)))
+def gaussian_torch(x, mu, sig, pow=2.):
+    return torch.exp(-torch.pow(torch.abs(x - mu), pow) / (2 * np.power(sig, pow)))
 
 d_candi_expanded_d = dict()
-def gen_soft_label_torch(d_candi, depthmap, variance, zero_invalid=False):
+def gen_soft_label_torch(d_candi, depthmap, variance, zero_invalid=False, pow=2.):
     global d_candi_expanded_d
     sstring = str(len(d_candi)) + "_" + str(depthmap.shape)
     if sstring not in d_candi_expanded_d.keys():
-        d_candi_expanded = torch.tensor(d_candi).float().cuda().unsqueeze(-1).unsqueeze(-1).repeat(1, depthmap.shape[0],
+        d_candi_expanded = torch.tensor(d_candi).float().to(depthmap.device).unsqueeze(-1).unsqueeze(-1).repeat(1, depthmap.shape[0],
                                                                                                    depthmap.shape[1])
         d_candi_expanded_d[sstring] = d_candi_expanded
     else:
         d_candi_expanded = d_candi_expanded_d[sstring]
 
     # Warning, if a value in depthmap doesnt lie within d_candi range, it will become nan. zero_invalid forces it to -1
-    sigma = math.sqrt(variance)
-    dists = gaussian_torch(d_candi_expanded, depthmap, sigma)
+    sigma = torch.sqrt(variance)
+    dists = gaussian_torch(d_candi_expanded, depthmap, sigma, pow)
     dists = dists/torch.sum(dists, dim=0)
     if zero_invalid: dists[dists != dists] = -1
 
     return dists
+
+def gen_uniform(d_candi, depthmap):
+    return torch.ones((len(d_candi), depthmap.shape[0], depthmap.shape[1])).to(depthmap.device) / len(d_candi)
 
 # Not diff
 def digitized_to_dpv(depth_digit, N):

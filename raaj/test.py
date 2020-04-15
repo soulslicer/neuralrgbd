@@ -28,6 +28,10 @@ def normalize(field):
     maxv, _ = field.max(1)  # [1,384]
     return (field - minv)/(maxv-minv)
 
+def update(dpv1, dpv2):
+    dpvmul = dpv1 * dpv2
+    dpvnorm = dpvmul/torch.sum(dpvmul, dim=1)
+    return dpvnorm
 
 import matplotlib.pyplot as plt
 # def plotfig(index):
@@ -66,51 +70,79 @@ rgbimg = torch.tensor(data["rgbimg"])
 d_candi = data["d_candi"]
 intr_up = torch.tensor(data["intr_up"])
 
+data["lc"]["rTc"][0,3] = 0.0
+
 lightcurtain = LightCurtain()
 lightcurtain.init(data["lc"])
 
 # GT DPV
-dpv_truth = util.gen_soft_label_torch(d_candi, torch.tensor(depthmap_truth_np).cuda(), 0.2, zero_invalid=True).unsqueeze(0).cpu()
+#mask = (torch.tensor(depthmap_truth_np) > 0).float()
+#dpv_truth = util.gen_soft_label_torch(d_candi, torch.tensor(depthmap_truth_np).cuda(), 0.5, zero_invalid=True).unsqueeze(0).cpu()
 
 # Field
-dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted.cuda(), d_candi, intr_up, None, img=None)
-dpv_plane_predicted = dpv_plane_predicted.squeeze(0)
+#dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted.cuda(), d_candi, intr_up, None, img=None)
+#dpv_plane_predicted = dpv_plane_predicted.squeeze(0)
 
 # Plan
-lc_paths, field_visual = lightcurtain.plan(dpv_plane_predicted.cuda())
+lc_paths, field_visual = lightcurtain.plan(dpv_plane_predicted)
 lc_paths = data["lc_paths"]
 
 pixel = [107,140]
 pixel = [235,144]
+# pixel = [336,171]
+
+print(depthmap_truth_np[pixel[1], pixel[0]])
 
 i=0
 lc_outputs = []
 for lc_path in lc_paths:
-    output = lightcurtain.sense_high(depthmap_truth_np, lc_path)
+    output, thickimg = lightcurtain.sense_high(depthmap_truth_np, lc_path)
     output[np.isnan(output[:, :, 0])] = 0
     intensity = output[pixel[1], pixel[0], 3]
+    thickness = thickimg[pixel[1], pixel[0]]
     zval = output[pixel[1], pixel[0], 2]
-    print((intensity, zval))
+    print((intensity, zval, thickness))
     #print(output[pixel[1], pixel[0], 3])
     cv2.imshow("int"+str(i), output[:,:,3]/255.)
     i+=1
     lc_outputs.append(output)
 
-truth_depth = depthmap_truth_np[pixel[1], pixel[0]]
-dpv_predicted = torch.exp(dpv_predicted)
-dist_pred = dpv_predicted[0, :, pixel[1], pixel[0]]
-dist_truth = dpv_truth[0, :, pixel[1], pixel[0]]
-plt.plot(np.array(d_candi), dist_pred.numpy())
-plt.plot(np.array(d_candi), dist_truth.numpy())
-newline([truth_depth,0], [truth_depth,1])
+cv2.waitKey(0)
+stop
+
+# I need to convert the output into a DPV
+for lc_output in lc_outputs:
+
+    # I have the Z val and the intensity
+
+
+    print(lc_output.shape)
+
+# # Make EXP
+# dpv_predicted = torch.exp(dpv_predicted)
+#
+#
+# # Dist Mult Test
+# dpv_updated = update(dpv_predicted,dpv_truth)
+#
+# truth_depth = depthmap_truth_np[pixel[1], pixel[0]]
+# #dpv_predicted = torch.exp(dpv_predicted)
+# dist_pred = dpv_predicted[0, :, pixel[1], pixel[0]]
+# dist_truth = dpv_truth[0, :, pixel[1], pixel[0]]
+# dist_updated = dpv_updated[0, :, pixel[1], pixel[0]]
+# plt.plot(np.array(d_candi), dist_pred.numpy())
+# plt.plot(np.array(d_candi), dist_truth.numpy())
+# plt.plot(np.array(d_candi), dist_updated.numpy())
+# newline([truth_depth,0], [truth_depth,1])
+# #plt.ion()
+# #plt.pause(0.1)
+# plt.show()
 
 # Create a function to generate the ground truth or some distribution but in a noisy way?
 #
 
 #cv2.imshow("field_visual", field_visual)
-cv2.imshow("win", rgbimg.numpy())
-cv2.imshow("depth", depthmap_truth_np/100.)
-cv2.imshow("dpv_plane_predicted", normalize(dpv_plane_predicted.unsqueeze(0)).squeeze(0).cpu().numpy())
-plt.ion()
-plt.pause(0.1)
-cv2.waitKey(0)
+# cv2.imshow("win", rgbimg.numpy())
+# cv2.imshow("depth", depthmap_truth_np/100.)
+# cv2.imshow("dpv_plane_predicted", normalize(dpv_plane_predicted.unsqueeze(0)).squeeze(0).cpu().numpy())
+# cv2.waitKey(0)

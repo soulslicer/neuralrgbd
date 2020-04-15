@@ -42,7 +42,9 @@ class FieldWarp:
 
     def warp(self, input, flowfield):
         gridfield = torch.zeros(flowfield.shape).to(input.device)
-        yv, xv = torch.meshgrid([torch.arange(0, input.shape[0]).float().cuda(), torch.arange(0, input.shape[1]).float().cuda()])
+        ax = torch.arange(0, input.shape[0]).float().to(input.device)
+        bx = torch.arange(0, input.shape[1]).float().to(input.device)
+        yv, xv = torch.meshgrid([ax, bx])
         ystep = 2. / float(input.shape[0] - 1)
         xstep = 2. / float(input.shape[1] - 1)
         gridfield[0, :, :, 0] = -1 + xv * xstep - flowfield[0, :, :, 0] * xstep
@@ -182,7 +184,7 @@ def normalize(field):
     return (field - minv)/(maxv-minv)
 
 def create_mean_kernel(N):
-    kernel = torch.Tensor(np.zeros((N,N)).astype(np.float32)).cuda()
+    kernel = torch.Tensor(np.zeros((N,N)).astype(np.float32))
     kernel[:,N/2] = 1/float(N)
     kernel = kernel.unsqueeze(0).unsqueeze(0)
     params = {'weight': kernel, 'padding': N//2}
@@ -256,6 +258,7 @@ class LightCurtain:
 
         # Apply smoothing Kernel
         mean_kernel = create_mean_kernel(5)
+        mean_kernel["weight"] = mean_kernel["weight"].to(field.device)
         field_preprocessed = F.conv2d(field_preprocessed.unsqueeze(0).unsqueeze(0), **mean_kernel).squeeze(0).squeeze(0)
 
         # Transform RGB to LC
@@ -287,7 +290,7 @@ class LightCurtain:
         pts_up = self.planner.get_design_points(left_field.cpu().numpy())
         pts_down = self.planner.get_design_points(right_field.cpu().numpy())
 
-        print("Forward: " + str(time.time() - start))
+        print("Plan: " + str(time.time() - start))
 
         # Visual
         field_visual = np.repeat(field_preprocessed.cpu().numpy()[:, :, np.newaxis], 3, axis=2)
@@ -313,27 +316,29 @@ class LightCurtain:
 
         # Warp depthmap to LC frame
         if not np.all(np.equal(self.PARAMS["rTc"], np.eye(4))):
-        #if True:
             pts_rgb = util.depth_to_pts(torch.Tensor(depth_rgb).unsqueeze(0), self.PARAMS['intr_rgb'])
             pts_rgb = pts_rgb.reshape((pts_rgb.shape[0], pts_rgb.shape[1]*pts_rgb.shape[2]))
             pts_rgb = torch.cat([pts_rgb, torch.ones(1, pts_rgb.shape[1])])
             pts_rgb = pts_rgb.numpy().T
-            depth_lc, _ = pylc.transformPoints(pts_rgb, self.PARAMS['intr_lc'], self.PARAMS['cTr'], self.PARAMS['size_lc'][0], self.PARAMS['size_lc'][1], {"filtering": 2})
+            thick_rgb = np.ones((pts_rgb.shape[0], 1)).astype(np.float32)
+            depth_lc, _, _ = pylc.transformPoints(pts_rgb, thick_rgb, self.PARAMS['intr_lc'], self.PARAMS['cTr'], self.PARAMS['size_lc'][0], self.PARAMS['size_lc'][1], {"filtering": 2})
         else:
             depth_lc = depth_rgb
 
         # Sense
-        output_lc = self.lightcurtain_large.get_return(depth_lc, design_pts_lc)
+        output_lc, thickness_lc = self.lightcurtain_large.get_return(depth_lc, design_pts_lc, True)
         output_lc[np.isnan(output_lc[:,:,0])] = 0
+        thickness_lc[np.isnan(thickness_lc[:, :])] = 0
 
         # Warp output to RGB frame
         if not np.all(np.equal(self.PARAMS["rTc"], np.eye(4))):
-        #if True:
             pts = output_lc.reshape((output_lc.shape[0]*output_lc.shape[1], 4))
-            depth_sensed, int_sensed = pylc.transformPoints(pts, self.PARAMS['intr_rgb'], self.PARAMS['rTc'], self.PARAMS['size_rgb'][0], self.PARAMS['size_rgb'][1], {"filtering": 0})
+            thickness = thickness_lc.flatten()
+            depth_sensed, int_sensed, thickness_sensed = pylc.transformPoints(pts, thickness, self.PARAMS['intr_rgb'], self.PARAMS['rTc'], self.PARAMS['size_rgb'][0], self.PARAMS['size_rgb'][1], {"filtering": 0})
         else:
             int_sensed = output_lc[:,:,3]
             depth_sensed = output_lc[:, :,2]
+            thickness_sensed = thickness_lc
 
         # Generate XYZ version for viz
         pts_sensed = util.depth_to_pts(torch.Tensor(depth_sensed).unsqueeze(0), self.PARAMS['intr_rgb'])
@@ -346,7 +351,7 @@ class LightCurtain:
         print("Sense: " + str(time.time() - start))
 
         # Return
-        return output_rgb
+        return output_rgb, thickness_sensed
 
         # cv2.imshow("depth_rgb", depth_rgb / 100.)
         # cv2.imshow("depth_lc", depth_lc / 100.)
