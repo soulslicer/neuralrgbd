@@ -30,8 +30,32 @@ def normalize(field):
 
 def update(dpv1, dpv2):
     dpvmul = dpv1 * dpv2
-    dpvnorm = dpvmul/torch.sum(dpvmul, dim=1)
+    dpvnorm = dpvmul/torch.sum(dpvmul, dim=0)
     return dpvnorm
+
+def mapping(x):
+    # https://www.desmos.com/calculator/htpohhqx1a
+
+    def ma(x, m):
+        A = -1. / ((m) * ((0.5 / m) + x)) + 1.
+        return A
+
+    def mb(x, m, f):
+        c = m / ((m * f + 0.5) ** 2)
+        y = c * x + (1 - c)
+        return y
+
+    m=5
+    f=0.45
+    mask = x > f
+    y = ~mask*ma(x, m=m) + mask*mb(x,m=m,f=f)
+    return y
+
+def mixed_model(d_candi, z_img, unc_img, A, B):
+    mixed_dist = util.gen_soft_label_torch(d_candi, z_img, unc_img, zero_invalid=True, pow=2.)*A + util.gen_uniform(d_candi, z_img)*B
+    mixed_dist = torch.clamp(mixed_dist, 0, np.inf)
+    mixed_dist = mixed_dist / torch.sum(mixed_dist, dim=0)
+    return mixed_dist
 
 import matplotlib.pyplot as plt
 # def plotfig(index):
@@ -47,7 +71,7 @@ import matplotlib.pyplot as plt
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 
-def newline(p1, p2):
+def newline(p1, p2, c='g'):
     ax = plt.gca()
     xmin, xmax = ax.get_xbound()
 
@@ -58,7 +82,7 @@ def newline(p1, p2):
         ymax = p1[1]+(p2[1]-p1[1])/(p2[0]-p1[0])*(xmax-p1[0])
         ymin = p1[1]+(p2[1]-p1[1])/(p2[0]-p1[0])*(xmin-p1[0])
 
-    l = mlines.Line2D([xmin,xmax], [ymin,ymax], color='g')
+    l = mlines.Line2D([xmin,xmax], [ymin,ymax], color=c)
     ax.add_line(l)
     return l
 
@@ -87,36 +111,100 @@ lightcurtain.init(data["lc"])
 lc_paths, field_visual = lightcurtain.plan(dpv_plane_predicted)
 lc_paths = data["lc_paths"]
 
-pixel = [107,140]
-pixel = [235,144]
-# pixel = [336,171]
+#pixel = [107,140]
+#pixel = [235,144]
+pixel = [336,171]
+#pixel = [100,100]
 
-print(depthmap_truth_np[pixel[1], pixel[0]])
+# Mask
+lc_mask = depthmap_truth_np > 0
 
 i=0
 lc_outputs = []
+DPVs = []
 for lc_path in lc_paths:
-    output, thickimg = lightcurtain.sense_high(depthmap_truth_np, lc_path)
-    output[np.isnan(output[:, :, 0])] = 0
-    intensity = output[pixel[1], pixel[0], 3]
-    thickness = thickimg[pixel[1], pixel[0]]
-    zval = output[pixel[1], pixel[0], 2]
-    print((intensity, zval, thickness))
-    #print(output[pixel[1], pixel[0], 3])
-    cv2.imshow("int"+str(i), output[:,:,3]/255.)
-    i+=1
-    lc_outputs.append(output)
+    # output, thickimg, DPV = lightcurtain.sense_high(depthmap_truth_np, lc_path)
+    # output[np.isnan(output[:, :, 0])] = 0
+    # truthz = depthmap_truth_np[pixel[1], pixel[0]]
+    # intensity = output[pixel[1], pixel[0], 3]
+    # thickness = thickimg[pixel[1], pixel[0]]
+    # zval = output[pixel[1], pixel[0], 2]
+    # print((truthz, intensity, zval, thickness))
+    # #print(output[pixel[1], pixel[0], 3])
+    # #cv2.imshow("int"+str(i), output[:,:,3]/255.)
+    # i+=1
+    # # CRITICAL
+    # #output[:,:,2] *= lc_mask
+    # #thickimg *= lc_mask
+    # lc_outputs.append([output, thickimg])
 
-cv2.waitKey(0)
-stop
+    DPV, output = lightcurtain.sense_high(depthmap_truth_np, lc_path)
+    DPVs.append(DPV.cpu())
 
-# I need to convert the output into a DPV
-for lc_output in lc_outputs:
+# Convert the LC stuff into a DPV
+# Multiply the DPV's and plot the results?
 
-    # I have the Z val and the intensity
+# # I need to convert the output into a DPV
+# DPVs = []
+# for lc_output, thickimg in lc_outputs:
+#
+#     # I have the Z val and the intensity
+#     z_img = lc_output[:,:,2]
+#     int_img = lc_output[:,:,3]/255.
+#     unc_img = (thickimg/6.)**2
+#     #unc_img = unc_img*0 + 0.1
+#
+#     # Generate?
+#     A = mapping(int_img)
+#     # Try fucking with 1 in the 1-A value
+#     DPV = mixed_model(d_candi, torch.tensor(z_img), torch.tensor(unc_img), torch.tensor(A), torch.tensor(1.-A))
+#     DPVs.append(DPV)
 
+# Exp
+dpv_predicted = torch.exp(dpv_predicted)[0]
 
-    print(lc_output.shape)
+# Fuse
+dpv_fused = torch.exp(torch.log(dpv_predicted) + torch.log(DPVs[0]) + torch.log(DPVs[1]) + torch.log(DPVs[2]))
+dpv_fused = dpv_fused/torch.sum(dpv_fused, dim=0)
+
+#dpv_fused = dpv_predicted
+#dpv_fused = update(dpv_fused, DPVs[0])
+#dpv_fused = update(dpv_fused, DPVs[1])
+#dpv_fused = update(dpv_fused, DPVs[2])
+
+dpv_pred_depth = util.dpv_to_depthmap(dpv_predicted.unsqueeze(0), d_candi, BV_log=False).squeeze(0)
+dpv_fused_depth = util.dpv_to_depthmap(dpv_fused.unsqueeze(0), d_candi, BV_log=False).squeeze(0)
+# print(AA[pixel[1], pixel[0]])
+# print(AA.shape)
+# stop
+
+# Full Error
+full_error = torch.sum(np.abs(dpv_pred_depth*lc_mask - depthmap_truth_np))/torch.sum(torch.tensor(lc_mask))
+print(full_error)
+full_error = torch.sum(np.abs(dpv_fused_depth*lc_mask - depthmap_truth_np))/torch.sum(torch.tensor(lc_mask))
+print(full_error)
+
+# Visualize
+axes = plt.axes()
+axes.set_ylim([0, 1.])
+truth_depth = depthmap_truth_np[pixel[1], pixel[0]]
+pred_depth = dpv_pred_depth[pixel[1], pixel[0]]
+fused_depth = dpv_fused_depth[pixel[1], pixel[0]]
+pred_dist = dpv_predicted[:, pixel[1], pixel[0]]
+
+newline([truth_depth,0], [truth_depth,1], 'g')
+newline([fused_depth,0], [fused_depth,1], 'b')
+newline([pred_depth,0], [pred_depth,1], 'r')
+print("Pred Error: " + str(abs(truth_depth - pred_depth)))
+print("Fused Error: " + str(abs(truth_depth - fused_depth)))
+
+plt.plot(np.array(d_candi), pred_dist.numpy())
+plt.plot(np.array(d_candi), DPVs[0][:, pixel[1], pixel[0]].numpy())
+plt.plot(np.array(d_candi), DPVs[1][:, pixel[1], pixel[0]].numpy())
+plt.plot(np.array(d_candi), DPVs[2][:, pixel[1], pixel[0]].numpy())
+plt.plot(np.array(d_candi), dpv_fused[:, pixel[1], pixel[0]].numpy())
+
+plt.show()
 
 # # Make EXP
 # dpv_predicted = torch.exp(dpv_predicted)

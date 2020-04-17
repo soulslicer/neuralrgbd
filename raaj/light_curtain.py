@@ -194,6 +194,30 @@ def invert(field):
     efield = -((1/np.sqrt(0.5)*(field-0.5))**2) + 0.5
     return efield
 
+def mapping(x):
+    # https://www.desmos.com/calculator/htpohhqx1a
+
+    def ma(x, m):
+        A = -1. / ((m) * ((0.5 / m) + x)) + 1.
+        return A
+
+    def mb(x, m, f):
+        c = m / ((m * f + 0.5) ** 2)
+        y = c * x + (1 - c)
+        return y
+
+    m=5
+    f=0.45
+    mask = x > f
+    y = ~mask*ma(x, m=m) + mask*mb(x,m=m,f=f)
+    return y
+
+def mixed_model(d_candi, z_img, unc_img, A, B):
+    mixed_dist = util.gen_soft_label_torch(d_candi, z_img, unc_img, zero_invalid=True, pow=2.)*A + util.gen_uniform(d_candi, z_img)*B
+    mixed_dist = torch.clamp(mixed_dist, 0, np.inf)
+    mixed_dist = mixed_dist / torch.sum(mixed_dist, dim=0)
+    return mixed_dist
+
 class LightCurtain:
     def __init__(self):
         self.lightcurtain = None
@@ -215,7 +239,7 @@ class LightCurtain:
             'matrix': PARAMS["intr_lc"],
             'distortion': PARAMS["dist_lc"],
             'hit_mode': 1,
-            'hit_noise': 0.01
+            'hit_noise': 0.0
         }
         CAMERA_PARAMS_SMALL = {
             'width': PARAMS["size_lc"][0] / 4,
@@ -223,7 +247,7 @@ class LightCurtain:
             'matrix': util.intr_scale_unit(PARAMS["intr_lc"], 1 / 4.),
             'distortion': PARAMS["dist_lc"],
             'hit_mode': 1,
-            'hit_noise': 0.01
+            'hit_noise': 0.0
         }
         LASER_PARAMS = {
            'lTc': PARAMS["lTc"],
@@ -247,7 +271,7 @@ class LightCurtain:
     def plan(self, field):
         #cv2.imshow("field", field.cpu().numpy())
 
-        start = time.time()
+        torch.cuda.synchronize(); start = time.time()
 
         # Fix Weird Side bug
         field[:, 0] = field[:, 1]
@@ -340,6 +364,38 @@ class LightCurtain:
             depth_sensed = output_lc[:, :,2]
             thickness_sensed = thickness_lc
 
+        # Transfer to CUDA
+        mask_sense = torch.tensor(depth_rgb > 0).float().cuda()
+        depth_sensed = torch.tensor(depth_sensed).cuda() * mask_sense
+        thickness_sensed = torch.tensor(thickness_sensed).cuda() * mask_sense
+        int_sensed = torch.tensor(int_sensed).cuda() * mask_sense
+
+        # Compute DPV
+        z_img = depth_sensed
+        int_img = int_sensed/255.
+        unc_img = (thickness_sensed / 6.) ** 2
+        A = mapping(int_img)
+        # Try fucking with 1 in the 1-A value
+        DPV = mixed_model(self.d_candi, z_img, unc_img, A, 1.-A)
+
+        # # Generate XYZ version for viz
+        # pts_sensed = util.depth_to_pts(depth_sensed.unsqueeze(0), self.PARAMS['intr_rgb']).cpu()
+        # output_rgb = np.zeros(output_lc.shape).astype(np.float32)
+        # output_rgb[:, :, 0] = pts_sensed[0, :, :]
+        # output_rgb[:, :, 1] = pts_sensed[1, :, :]
+        # output_rgb[:, :, 2] = pts_sensed[2, :, :]
+        # output_rgb[:, :, 3] = int_sensed.cpu()
+        output_rgb = None
+
+
+        torch.cuda.synchronize(); print("Sense: " + str(time.time() - start))
+
+
+        return DPV, output_rgb
+
+
+        ##########
+
         # Generate XYZ version for viz
         pts_sensed = util.depth_to_pts(torch.Tensor(depth_sensed).unsqueeze(0), self.PARAMS['intr_rgb'])
         output_rgb = np.zeros(output_lc.shape).astype(np.float32)
@@ -348,10 +404,6 @@ class LightCurtain:
         output_rgb[:, :, 2] = pts_sensed[2, :, :]
         output_rgb[:, :, 3] = int_sensed
 
-        print("Sense: " + str(time.time() - start))
-
-        # Return
-        return output_rgb, thickness_sensed
 
         # cv2.imshow("depth_rgb", depth_rgb / 100.)
         # cv2.imshow("depth_lc", depth_lc / 100.)

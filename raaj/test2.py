@@ -38,16 +38,17 @@ def on_change(self):
 # VARIANCE
 unc_img = np.array([
     [(3./6.)**2, 0.3],
-    [0.3, 0.3]
+    [0.3, 0]
 ]).astype(np.float32)
 z_img = np.array([
     [20, 20],
-    [20, 20]
+    [20, 0]
 ]).astype(np.float32)
 int_img = np.array([
     [(50./255.), 1.],
-    [1., 1.]
+    [1., 0]
 ]).astype(np.float32)
+mask = z_img > 0
 
 
 def mapping(x):
@@ -85,13 +86,15 @@ def mixed_model(d_candi, z_img, unc_img, A, B):
 d_candi = util.powerf(5, 40, 96, 1.5)
 # x = util.gen_soft_label_torch(d_candi, torch.tensor(z_img), torch.tensor(unc_img), zero_invalid=True)
 # y = util.gen_uniform(d_candi, torch.tensor(z_img))
-A,B = mapping(int_img)
-z = mixed_model(d_candi, torch.tensor(z_img), torch.tensor(unc_img), torch.tensor(A), torch.tensor(B))
+A = mapping(int_img)
+print(A)
+z = mixed_model(d_candi, torch.tensor(z_img), torch.tensor(unc_img), torch.tensor(A), torch.tensor(1.-A))
 #gaussian(d_candi, z_img, unc_img, 2.)
 
 axes = plt.axes()
 axes.set_ylim([0, 0.5])
-dist = z[:,0,0]
+dist = z[:,1,1]
+#print(dist)
 plt.plot(d_candi, dist.numpy())
 plt.show()
 
