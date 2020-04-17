@@ -271,7 +271,7 @@ class LightCurtain:
     def plan(self, field):
         #cv2.imshow("field", field.cpu().numpy())
 
-        torch.cuda.synchronize(); start = time.time()
+        start = time.time()
 
         # Fix Weird Side bug
         field[:, 0] = field[:, 1]
@@ -299,7 +299,7 @@ class LightCurtain:
         left_field = field_preprocessed_range.clone()
         right_field = field_preprocessed_range.clone()
         values, indices = torch.max(field_preprocessed_range, 0)
-        # Extremely slow needs to be in CUDA
+        # Extremely slow needs to be in CUDA (Takes 30ms?)
         for i in range(0, indices.shape[0]):
             maxind = indices[i]
             left_field[0:maxind, i] = 1.
@@ -335,7 +335,7 @@ class LightCurtain:
     #
     #     return output
 
-    def sense_high(self, depth_rgb, design_pts_lc):
+    def sense_high(self, depth_rgb, design_pts_lc, visualizer=None):
         start = time.time()
 
         # Warp depthmap to LC frame
@@ -378,17 +378,21 @@ class LightCurtain:
         # Try fucking with 1 in the 1-A value
         DPV = mixed_model(self.d_candi, z_img, unc_img, A, 1.-A)
 
-        # # Generate XYZ version for viz
-        # pts_sensed = util.depth_to_pts(depth_sensed.unsqueeze(0), self.PARAMS['intr_rgb']).cpu()
-        # output_rgb = np.zeros(output_lc.shape).astype(np.float32)
-        # output_rgb[:, :, 0] = pts_sensed[0, :, :]
-        # output_rgb[:, :, 1] = pts_sensed[1, :, :]
-        # output_rgb[:, :, 2] = pts_sensed[2, :, :]
-        # output_rgb[:, :, 3] = int_sensed.cpu()
+        # Generate XYZ version for viz
         output_rgb = None
+        if visualizer:
+            pts_sensed = util.depth_to_pts(depth_sensed.unsqueeze(0), self.PARAMS['intr_rgb']).cpu()
+            output_rgb = np.zeros(output_lc.shape).astype(np.float32)
+            output_rgb[:, :, 0] = pts_sensed[0, :, :]
+            output_rgb[:, :, 1] = pts_sensed[1, :, :]
+            output_rgb[:, :, 2] = pts_sensed[2, :, :]
+            output_rgb[:, :, 3] = int_sensed.cpu()
+            output_rgb[np.isnan(output_rgb[:, :, 0])] = 0
 
 
-        torch.cuda.synchronize(); print("Sense: " + str(time.time() - start))
+        #torch.cuda.synchronize(); print("Sense: " + str(time.time() - start))
+
+        #consider testing that slice that can actually be sensed
 
 
         return DPV, output_rgb

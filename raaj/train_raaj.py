@@ -530,7 +530,7 @@ def generate_model_input(local_info_valid, camside="left", softce=0, pnoise=0):
         d_candi = local_info_valid["d_candi"]
         soft_labels_imgsize = []
         soft_labels = []
-        variance = softce
+        variance = torch.tensor(softce)
         for i in range(0, dmap_imgsizes.shape[0]):
             # Clamping
             dmap_imgsize = dmap_imgsizes[i, :, :].clamp(d_candi[0], d_candi[-1]) * masks_imgsize[i, 0, :, :]
@@ -569,10 +569,10 @@ def generate_model_input(local_info_valid, camside="left", softce=0, pnoise=0):
 
 
 def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, lightcurtain):
-    import deval.pyevaluatedepth_lib as dlib
-    epsilon = sys.float_info.epsilon
     all_errors = []
     all_errors_low = []
+    all_lc_before_errors = []
+    all_lc_after_errors = []
     rsc_sum = 0.
     dc_sum = 0.
     smooth_sum = 0.
@@ -699,8 +699,8 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 depthmap_truth_low_np[depthmap_truth_low_np >= d_candi[-1]] = d_candi[-1]
 
                 # Error
-                errors = dlib.depthError(depthmap_predicted_np + epsilon, depthmap_truth_np + epsilon)
-                errors_low = dlib.depthError(depthmap_predicted_low_np + epsilon, depthmap_truth_low_np + epsilon)
+                errors = util.depthError(depthmap_predicted_np, depthmap_truth_np)
+                errors_low = util.depthError(depthmap_predicted_low_np, depthmap_truth_low_np)
                 all_errors.append(errors)
                 all_errors_low.append(errors_low)
 
@@ -711,57 +711,72 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 # intrinsics = intr.squeeze(0).cuda()
                 # depthmaps_transformed = util.transform_depth(depthmaps, intrinsics, transform)
 
-                # Field
-                dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted, d_candi, intr_up.squeeze(0), visualizer, img=None)
-                dpv_plane_predicted = dpv_plane_predicted.squeeze(0)
-
                 # Light Curtain
                 if lightcurtain is not None:
+                    # Field
+                    dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted, d_candi, intr_up.squeeze(0), visualizer, img=None)
+                    dpv_plane_predicted = dpv_plane_predicted.squeeze(0)
+                    plane_mask = depth_mask * debugmap  # [1x256x384]
+                    # plane_mask = depth_mask
+
                     # Plan
                     lc_paths, field_visual = lightcurtain.plan(dpv_plane_predicted)
 
                     # Sense
                     lc_outputs = []
+                    lc_DPVs = []
                     for lc_path in lc_paths:
-                        output = lightcurtain.sense_high(depthmap_truth_np, lc_path)
-                        output[np.isnan(output[:, :, 0])] = 0
+                        lc_DPV, output = lightcurtain.sense_high(depthmap_truth_np, lc_path, visualizer)
                         lc_outputs.append(output)
-
-                # Visualization
-
-                rgbimg = util.torchrgb_to_cv2(left_rgb.squeeze(0))
-                rgbimg[:,:,0] += debugmap.squeeze(0).cpu().numpy()
-                cv2.imshow("rgbimg", rgbimg)
-
-                if lightcurtain is not None:
-                    cv2.imshow("field_visual", field_visual)
+                        lc_DPVs.append(lc_DPV)
 
 
-                    visualizer.addCloud(util.lcpath_to_cloud(lc_paths[0]), 3)
-                    visualizer.addCloud(util.lcpath_to_cloud(lc_paths[1], [255,0,0]), 3)
-                    visualizer.addCloud(util.lcpath_to_cloud(lc_paths[2], [255, 0, 0]), 3)
+                    # Fuse
+                    dpv_pred = torch.exp(dpv_predicted)[0]
+                    dpv_fused = torch.exp(
+                        torch.log(dpv_pred) + torch.log(lc_DPVs[0]) + torch.log(lc_DPVs[1]) + torch.log(lc_DPVs[2]))
+                    dpv_fused = dpv_fused / torch.sum(dpv_fused, dim=0)
+                    dpv_fused_depth = util.dpv_to_depthmap(dpv_fused.unsqueeze(0), d_candi, BV_log=False)
+                    dpv_pred_depth = util.dpv_to_depthmap(dpv_pred.unsqueeze(0), d_candi, BV_log=False)
+                    depthmap_truth_capped = torch.tensor(depthmap_truth_np).cuda().unsqueeze(0)
 
-                    visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[0]), 3)
-                    #visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[1]), 3)
-                    #visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[2]), 3)
+                    # Store
+                    depthmap_truth_lc_np = (depthmap_truth_capped * plane_mask).squeeze(0).cpu().numpy()
+                    depthmap_pred_lc_np = (depthmap_predicted * plane_mask).squeeze(0).cpu().numpy()
+                    depthmap_fuse_lc_np = (dpv_fused_depth * plane_mask).squeeze(0).cpu().numpy()
+                    lc_before_error = util.depthError(depthmap_pred_lc_np, depthmap_truth_lc_np)
+                    lc_after_error = util.depthError(depthmap_fuse_lc_np, depthmap_truth_lc_np)
+                    all_lc_before_errors.append(lc_before_error)
+                    all_lc_after_errors.append(lc_after_error)
 
-                    #cv2.imshow("lc", lc_outputs[0][:,:,3]/255.)
+                    # Visualization
+                    if visualizer is not None:
+                        dpv_plane_truth, _ = losses.gen_ufield(soft_label_refined, d_candi, intr_up.squeeze(0), visualizer, None, False, True)
+                        dpv_plane_fused, _ = losses.gen_ufield(dpv_fused.unsqueeze(0), d_candi, intr_up.squeeze(0), visualizer, img=None, BV_log=False)
 
-                # I need to deal with the transforms. What is the XZ Position actually
-                # Or does it matter, cos its anyway fed into the system
+                        rgbimg = util.torchrgb_to_cv2(left_rgb.squeeze(0))
+                        rgbimg[:,:,0] += debugmap.squeeze(0).cpu().numpy()
+                        cv2.imshow("rgbimg", rgbimg)
+                        cv2.imshow("field_visual", field_visual)
+                        #cv2.imshow("dpv_plane_truth", util.dpvplane_normalize(dpv_plane_truth).squeeze(0).cpu().numpy())
 
-                # Test trying to increase the depth res
+                        # dpv_plane_fused_norm = util.dpvplane_normalize(dpv_plane_fused)
+                        # dpv_plane_pred_norm = util.dpvplane_normalize(dpv_plane_predicted.unsqueeze(0))
+                        # cv2.imshow("dpv_plane_pred_norm", util.dpvplane_draw(dpv_plane_truth.squeeze(0), dpv_plane_pred_norm.squeeze(0)))
+                        # cv2.imshow("dpv_plane_fused_norm", util.dpvplane_draw(dpv_plane_truth.squeeze(0), dpv_plane_fused_norm.squeeze(0)))
 
-                b = 0
-                cloud_truth = util.tocloud(depthmap_truth, util.demean(left_rgb[b,:,:,:]), intr_up[b,:,:], None)
-                visualizer.addCloud(cloud_truth)
+                        visualizer.addCloud(util.lcpath_to_cloud(lc_paths[0]), 3)
+                        visualizer.addCloud(util.lcpath_to_cloud(lc_paths[1], [255,0,0]), 3)
+                        visualizer.addCloud(util.lcpath_to_cloud(lc_paths[2], [255, 0, 0]), 3)
+                        visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[0]), 3)
+                        visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[1]), 3)
+                        visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[2]), 3)
+                        b = 0
+                        cloud_truth = util.tocloud(depthmap_truth, util.demean(left_rgb[b,:,:,:]), intr_up[b,:,:], None)
+                        visualizer.addCloud(cloud_truth)
+                        visualizer.swapBuffer()
+                        cv2.waitKey(0)
 
-
-                visualizer.swapBuffer()
-                cv2.waitKey(1)
-
-
-                print("End: " + str(time.time() - start))
                 continue
 
                 # Viz
@@ -883,8 +898,16 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
         else:
             pass
 
-    results = dlib.evaluateErrors(all_errors)
-    results_low = dlib.evaluateErrors(all_errors_low)
+    if lightcurtain is not None:
+        results_before = util.evaluateErrors(all_lc_before_errors)
+        results_after = util.evaluateErrors(all_lc_after_errors)
+        print(results_before["rmse"][0], results_after["rmse"][0])
+        print("--")
+        print(results_before["scale invariant log"][0], results_after["scale invariant log"][0])
+        stop
+
+    results = util.evaluateErrors(all_errors)
+    results_low = util.evaluateErrors(all_errors_low)
     rsc_sum /= counter
     smooth_sum /= counter
     dc_sum /= counter

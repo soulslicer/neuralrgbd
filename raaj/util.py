@@ -19,6 +19,10 @@ import kitti
 import cv2
 import inverse_warp as iv
 
+import deval.pyevaluatedepth_lib as dlib
+import sys
+epsilon = sys.float_info.epsilon
+
 def load_pretrained_model(model, pretrained_path, optimizer = None):
     r'''
     load the pre-trained model, if needed, also load the optimizer status
@@ -74,6 +78,31 @@ def load_filenames_from_folder(pre_trained_folder):
             all_files.append(os.path.join(subdir, file))
     all_files = natural_sort(all_files)
     return all_files
+
+def depthError(predicted, truth):
+    predicted_copy = predicted.copy()
+    truth_copy = truth.copy()
+    predicted_copy[predicted_copy == 0] = -1
+    truth_copy[truth_copy == 0] = -1
+    return dlib.depthError(predicted_copy + epsilon, truth_copy + epsilon)
+
+def evaluateErrors(errors):
+    return dlib.evaluateErrors(errors)
+
+def dpvplane_normalize(field):
+    minv, _ = field.min(1) # [1,384]
+    maxv, _ = field.max(1)  # [1,384]
+    return (field - minv)/(maxv-minv)
+
+def dpvplane_draw(dpv_plane_truth, dpv_plane_pred):
+    truth = (dpv_plane_truth.cpu().numpy() * 255).astype(np.uint8)
+    pred = (dpv_plane_pred.cpu().numpy() * 255).astype(np.uint8)
+    pred_col = cv2.cvtColor(pred, cv2.COLOR_GRAY2BGR)
+    for r in range(0, pred.shape[0]):
+        for c in range(0, pred.shape[1]):
+            if truth[r, c] > 1:
+                pred_col[r, c, :] = [0, 0, 255]
+    return pred_col
 
 def minpool(tensor, scale, default=0):
     if default:
@@ -216,7 +245,7 @@ def torchrgb_to_cv2(input, demean=True):
     return cv2.cvtColor(input[:, :, :].cpu().numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
 
 def gaussian_torch(x, mu, sig, pow=2.):
-    return torch.exp(-torch.pow(torch.abs(x - mu), pow) / (2 * np.power(sig, pow)))
+    return torch.exp(-torch.pow(torch.abs(x - mu), pow) / (2 * torch.pow(sig, pow)))
 
 d_candi_expanded_d = dict()
 def gen_soft_label_torch(d_candi, depthmap, variance, zero_invalid=False, pow=2.):
@@ -260,7 +289,7 @@ def dpv_to_depthmap(dpv, d_candi, BV_log=False):
     if dpv.shape[0] != 1:
         raise Exception('Unable to handle this case')
 
-    depth_regress = torch.zeros(1, dpv.shape[2], dpv.shape[3]).cuda()
+    depth_regress = torch.zeros(1, dpv.shape[2], dpv.shape[3]).to(dpv.device)
     for idx_d, d in enumerate(d_candi):
         if BV_log:
             depth_regress = depth_regress + torch.exp(dpv[0,idx_d,:,:]) * d

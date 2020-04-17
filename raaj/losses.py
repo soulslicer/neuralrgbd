@@ -245,7 +245,10 @@ def gen_ufield(dpv_predicted, d_candi, intr_up, visualizer, img, BV_log=True, no
 
     # DPV Zero out and collapse
     zero_mask_predicted = zero_mask_predicted.repeat([64, 1, 1], 0, 1).unsqueeze(0)
-    dpv_plane = torch.sum(torch.exp(dpv_predicted) * zero_mask_predicted, axis = 2) # [1,64,384]
+    if BV_log:
+        dpv_plane = torch.sum(torch.exp(dpv_predicted) * zero_mask_predicted, axis = 2) # [1,64,384]
+    else:
+        dpv_plane = torch.sum(dpv_predicted * zero_mask_predicted, axis=2)  # [1,64,384]
 
     # Normalize
     ax = torch.sum(zero_mask, axis=0)
