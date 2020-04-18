@@ -551,7 +551,10 @@ def generate_model_input(local_info_valid, camside="left", softce=0, pnoise=0):
         "unit_ray": unit_ray.cuda(),
         "src_cam_poses": src_cam_poses.cuda(),
         "rgb": rgb.cuda(),
-        "bv_predict": None  # Has to be [B, 64, H, W]
+        "bv_predict": None,  # Has to be [B, 64, H, W],
+        "dmaps": dmaps.cuda(),
+        "masks": masks.cuda(),
+        "d_candi": d_candi,
     }
 
     gt_input = {
@@ -717,7 +720,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     dpv_plane_predicted, debugmap = losses.gen_ufield(dpv_predicted, d_candi, intr_up.squeeze(0), visualizer, img=None)
                     dpv_plane_predicted = dpv_plane_predicted.squeeze(0)
                     plane_mask = depth_mask * debugmap  # [1x256x384]
-                    # plane_mask = depth_mask
+                    plane_mask = depth_mask
 
                     # Plan
                     lc_paths, field_visual = lightcurtain.plan(dpv_plane_predicted)
@@ -740,9 +743,21 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     dpv_pred_depth = util.dpv_to_depthmap(dpv_pred.unsqueeze(0), d_candi, BV_log=False)
                     depthmap_truth_capped = torch.tensor(depthmap_truth_np).cuda().unsqueeze(0)
 
+                    # # LIDAR HACK
+                    # PROBLEM: For points that dont exist..i need to make it a uniform distribution!
+                    # NEED ALGO that finds 0 in mask and adds in a uniform dist?
+                    # soft_label_refined = soft_label_refined * depth_mask
+                    # print(depth_mask[0,100,100])
+                    # print(depthmap_truth_np[100,100])
+                    # print(soft_label_refined[0,:,100,100])
+                    # stop
+                    # dpv_fused = torch.exp(torch.log(dpv_pred) + torch.log(soft_label_refined.squeeze(0)))
+                    # dpv_fused = dpv_fused / torch.sum(dpv_fused, dim=0)
+                    # dpv_fused_depth = util.dpv_to_depthmap(dpv_fused.unsqueeze(0), d_candi, BV_log=False)
+
                     # Store
                     depthmap_truth_lc_np = (depthmap_truth_capped * plane_mask).squeeze(0).cpu().numpy()
-                    depthmap_pred_lc_np = (depthmap_predicted * plane_mask).squeeze(0).cpu().numpy()
+                    depthmap_pred_lc_np = (dpv_pred_depth * plane_mask).squeeze(0).cpu().numpy()
                     depthmap_fuse_lc_np = (dpv_fused_depth * plane_mask).squeeze(0).cpu().numpy()
                     lc_before_error = util.depthError(depthmap_pred_lc_np, depthmap_truth_lc_np)
                     lc_after_error = util.depthError(depthmap_fuse_lc_np, depthmap_truth_lc_np)
@@ -773,6 +788,7 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                         visualizer.addCloud(util.lcoutput_to_cloud(lc_outputs[2]), 3)
                         b = 0
                         cloud_truth = util.tocloud(depthmap_truth, util.demean(left_rgb[b,:,:,:]), intr_up[b,:,:], None)
+                        #cloud_pred = util.tocloud(torch.tensor(depthmap_fuse_lc_np).unsqueeze(0), util.demean(left_rgb[b,:,:,:]), intr_up[b,:,:], None)
                         visualizer.addCloud(cloud_truth)
                         visualizer.swapBuffer()
                         cv2.waitKey(0)

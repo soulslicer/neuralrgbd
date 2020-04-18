@@ -88,6 +88,37 @@ class KVNET(nn.Module):
 
             return BV_cur_array, BV_cur_refined
 
+        elif self.nmode == "lhack":
+
+            # Compute the cost volume and get features
+            BV_cur, cost_volumes, d_net_features = self.d_net(model_input)
+            d_net_features.append(model_input["rgb"][:,-1,:,:,:])
+            # 64 in feature Dim depends on the command line arguments
+            # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
+
+            tofuse_dpv = []
+            for b in range(0, model_input["dmaps"].shape[0]):
+                dmap = model_input["dmaps"][b,:,:]
+                mask = model_input["masks"][b,0,:,:].unsqueeze(0)
+                mask_inv = 1. - mask
+                truth_dpv = util.gen_soft_label_torch(model_input["d_candi"], dmap, torch.tensor(0.3), zero_invalid=True)
+                uni_dpv = util.gen_uniform(model_input["d_candi"], dmap)
+                modified_dpv = truth_dpv*mask + uni_dpv*mask_inv
+                tofuse_dpv.append(modified_dpv.unsqueeze(0))
+            tofuse_dpv = torch.cat(tofuse_dpv)
+            tofuse_dpv = torch.clamp(tofuse_dpv, util.epsilon, 1.)
+
+            fused_dpv = torch.exp(BV_cur + torch.log(tofuse_dpv))
+            fused_dpv = fused_dpv / torch.sum(fused_dpv, dim=1).unsqueeze(1)
+            fused_dpv = torch.clamp(fused_dpv, util.epsilon, 1.)
+            BV_cur = torch.log(fused_dpv)
+
+            # Make sure size is still correct here!
+            BV_cur_refined = self.r_net(fused_dpv, img_features=d_net_features)
+            # [B,128,256,384]
+
+            return [BV_cur], BV_cur_refined
+
         elif self.nmode == "irefine":
             # Variables
             down_sample_rate = 4.

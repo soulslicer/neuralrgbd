@@ -20,8 +20,7 @@ import cv2
 import inverse_warp as iv
 
 import deval.pyevaluatedepth_lib as dlib
-import sys
-epsilon = sys.float_info.epsilon
+epsilon = torch.finfo(float).eps
 
 def load_pretrained_model(model, pretrained_path, optimizer = None):
     r'''
