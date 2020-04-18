@@ -97,7 +97,7 @@ class KVNET(nn.Module):
             # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
 
             tofuse_dpv = []
-            truth_var = torch.tensor(0.3).cuda()
+            truth_var = torch.tensor(0.3)
             for b in range(0, model_input["dmaps"].shape[0]):
                 dmap = model_input["dmaps"][b,:,:]
                 mask = model_input["masks"][b,0,:,:].unsqueeze(0)

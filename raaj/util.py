@@ -249,7 +249,7 @@ def gaussian_torch(x, mu, sig, pow=2.):
 d_candi_expanded_d = dict()
 def gen_soft_label_torch(d_candi, depthmap, variance, zero_invalid=False, pow=2.):
     global d_candi_expanded_d
-    sstring = str(len(d_candi)) + "_" + str(depthmap.shape)
+    sstring = str(len(d_candi)) + "_" + str(depthmap.shape) + "_" + str(depthmap.device)
     if sstring not in d_candi_expanded_d.keys():
         d_candi_expanded = torch.tensor(d_candi).float().to(depthmap.device).unsqueeze(-1).unsqueeze(-1).repeat(1, depthmap.shape[0],
                                                                                                    depthmap.shape[1])
