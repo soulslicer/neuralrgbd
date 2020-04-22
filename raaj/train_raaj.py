@@ -526,8 +526,8 @@ def generate_model_input(local_info_valid, camside="left", softce=0, pnoise=0):
     masks = torch.cat(mask_arr).float()
 
     # Create Soft Label
+    d_candi = local_info_valid["d_candi"]
     if softce:
-        d_candi = local_info_valid["d_candi"]
         soft_labels_imgsize = []
         soft_labels = []
         variance = torch.tensor(softce)
