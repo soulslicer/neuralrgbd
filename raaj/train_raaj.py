@@ -793,6 +793,44 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                         visualizer.swapBuffer()
                         cv2.waitKey(0)
 
+                # Normal
+                else:
+                    intr_up = model_input["intrinsics_up"][b, :, :].cpu()
+                    intr = model_input["intrinsics"][b, :, :].cpu()
+                    depthmap_predicted_np = (depthmap_predicted * 1).cpu()
+                    depthmap_low_predicted_np = (depthmap_low_predicted * 1).cpu()
+                    depthmap_predicted_np[:, 0:depthmap_predicted_np.shape[1] / 2, :] = 0
+                    depthmap_low_predicted_np[:, 0:depthmap_low_predicted_np.shape[1] / 2, :] = 0
+
+                    # Get Image
+                    img = model_input["rgb"][b, -1, :, :, :].cpu()  # [1,3,256,384]
+                    img[0, :, :] = img[0, :, :] * kitti.__imagenet_stats["std"][0] + kitti.__imagenet_stats["mean"][0]
+                    img[1, :, :] = img[1, :, :] * kitti.__imagenet_stats["std"][1] + kitti.__imagenet_stats["mean"][1]
+                    img[2, :, :] = img[2, :, :] * kitti.__imagenet_stats["std"][2] + kitti.__imagenet_stats["mean"][2]
+                    img_low = F.avg_pool2d(img, 4)
+                    img_color = cv2.cvtColor(img[:, :, :].cpu().numpy().transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
+                    img_depth = cv2.cvtColor(depthmap_predicted_np[0, :, :].numpy() / 100., cv2.COLOR_GRAY2BGR)
+                    combined = np.hstack([img_color, img_depth])
+                    print(combined.shape)
+
+                    # Cloud
+                    cloud_low_orig = util.tocloud(depthmap_low_predicted_np, img_low, intr, None)
+                    cloud_orig = util.tocloud(depthmap_predicted_np, img, intr_up, None)
+                    cloud_truth = util.tocloud(torch.tensor(depthmap_truth_np[np.newaxis, :]), img, intr_up, None)
+                    cloud_low_truth = util.tocloud(torch.tensor(depthmap_truth_low_np[np.newaxis, :]), img_low, intr,
+                                                   None, [0,0,255])
+                    cv2.imshow("win", combined)
+                    print(cloud_orig.shape)
+                    #visualizer.addCloud(cloud_low_truth, 3)
+                    visualizer.addCloud(cloud_orig,1)
+                    #visualizer.addCloud(cloud_low_truth, 3)
+                    #visualizer.addCloud(cloud_orig, 1)
+                    #visualizer.addCloud(slicecloud, 2)
+                    visualizer.addCloud(dcloud, 4)
+                    visualizer.swapBuffer()
+                    key = cv2.waitKey(0)
+                    print("--")
+
                 continue
 
                 # Viz

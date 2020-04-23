@@ -25,6 +25,16 @@ def conv2d_leakyRelu(ch_in, ch_out, kernel_size, stride, pad, use_bias=True, dil
                 padding = dilation if dilation >1 else pad, dilation = dilation, bias= use_bias),
             nn.LeakyReLU())
 
+def conv2d_PReLU(ch_in, ch_out, kernel_size, stride, pad, use_bias=True, dilation = 1):
+    r'''
+    Conv2d + leakyRelu
+    '''
+    return nn.Sequential(
+            nn.Conv2d(
+                ch_in, ch_out, kernel_size=kernel_size, stride = stride,
+                padding = dilation if dilation >1 else pad, dilation = dilation, bias= use_bias),
+            nn.PReLU())
+
 def linear_leakyRelu(ch_in, ch_out, use_bias=True,):
     r'''
     Linear + leakyRelu

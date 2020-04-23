@@ -28,6 +28,78 @@ def convbn_3d_bias(in_planes, out_planes, kernel_size, stride, pad):
                                    stride=stride,bias=True),
                          nn.BatchNorm3d(out_planes))
 
+class ResConvBlock(torch.nn.Module):
+    def __init__(self, In_D, Out_D, BN=False):
+        """
+        In the constructor we instantiate two nn.Linear modules and assign them as
+        member variables.
+        """
+        super(ResConvBlock, self).__init__()
+
+        if BN:
+            self.a = nn.Sequential(
+                convbn(In_D, Out_D, 3, 1, 1, 1, False), nn.ReLU(inplace=True)
+            )
+            self.b = nn.Sequential(
+                convbn(Out_D, Out_D, 3, 1, 1, 1, False), nn.ReLU(inplace=True)
+            )
+            self.c = nn.Sequential(
+                convbn(Out_D, Out_D, 3, 1, 1, 1, False), nn.ReLU(inplace=True)
+            )
+        else:
+            self.a = nn.Sequential(
+                nn.Conv2d(In_D, Out_D, 3, 1, 1),
+                nn.PReLU(Out_D)
+            )
+            self.b = nn.Sequential(
+                nn.Conv2d(Out_D, Out_D, 3, 1, 1),
+                nn.PReLU(Out_D)
+            )
+            self.c = nn.Sequential(
+                nn.Conv2d(Out_D, Out_D, 3, 1, 1),
+                nn.PReLU(Out_D)
+            )
+
+    def forward(self, x):
+        a_output = self.a(x)
+        b_output = self.b(a_output)
+        c_output = self.c(b_output)
+        output = torch.cat([a_output, b_output, c_output], 1)
+        return output
+
+class ABlock3x3(torch.nn.Module):
+    def __init__(self, In_D, Out_D, Depth=64, SubDepth=256, C=7, BN=False):
+        """
+        In the constructor we instantiate two nn.Linear modules and assign them as
+        member variables.
+        """
+        super(ABlock3x3, self).__init__()
+
+        modules = [ResConvBlock(In_D, Depth, BN)]
+        for i in range(0, C):
+            modules.append(ResConvBlock(Depth * 3, Depth, BN))
+        modules.append(nn.Conv2d(Depth * 3, SubDepth, 1, 1, 0))
+        modules.append(nn.PReLU(SubDepth))
+        modules.append(nn.Conv2d(SubDepth, Out_D, 1, 1, 0))
+
+        self.net = nn.Sequential(
+            *modules
+        )
+        self.apply(self.weight_init)
+
+    def weight_init(self, m):
+        if isinstance(m, nn.Conv2d):
+            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+            m.weight.data.normal_(0, math.sqrt(2. / n))
+        elif isinstance(m, nn.BatchNorm2d):
+            m.weight.data.fill_(1)
+            m.bias.data.zero_()
+        elif isinstance(m, nn.Linear):
+            m.bias.data.zero_()
+
+    def forward(self, x):
+        return self.net(x)
+
 class BasicBlock(nn.Module):
     expansion = 1
     def __init__(self, inplanes, planes, stride, downsample, pad, dilation, bn_running_avg = False):
