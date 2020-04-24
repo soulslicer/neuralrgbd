@@ -264,4 +264,31 @@ class KVNET(nn.Module):
 
             return [dpv_a, dpv_b], BV_cur_refined
 
+        elif self.nmode == "stagerefine2":
+            # Compute the cost volume and get features
+            _, cost_volumes, d_net_features = self.d_net(model_input)
+            d_net_features.append(model_input["rgb"][:,-1,:,:,:])
+
+            # To Test
+            # Add or log
+            # BN=True
+            # Mess with the *2
+            # 3D Conv for the modB?
+            # Test with BS of 4??
+
+            # Setup Network
+            if self.modA == None:
+                IN_C =  cost_volumes.shape[1]
+                OUT_C = len(self.d_candi)
+                self.modA = ABlock3x3(IN_C, OUT_C, OUT_C, OUT_C*2, C=4, BN=True).cuda()
+
+            # Two stage
+            out_a = self.modA(cost_volumes)
+            dpv_a = F.log_softmax(out_a, dim=1)
+
+            # Refine
+            BV_cur_refined = self.r_net(torch.exp(dpv_a), img_features=d_net_features)
+
+            return [dpv_a], BV_cur_refined
+
         # Some mechanism to refine from previous?

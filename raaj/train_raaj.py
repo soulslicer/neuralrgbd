@@ -733,7 +733,6 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                         lc_outputs.append(output)
                         lc_DPVs.append(lc_DPV)
 
-
                     # Fuse
                     dpv_pred = torch.exp(dpv_predicted)[0]
                     dpv_fused = torch.exp(
@@ -742,18 +741,6 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     dpv_fused_depth = util.dpv_to_depthmap(dpv_fused.unsqueeze(0), d_candi, BV_log=False)
                     dpv_pred_depth = util.dpv_to_depthmap(dpv_pred.unsqueeze(0), d_candi, BV_log=False)
                     depthmap_truth_capped = torch.tensor(depthmap_truth_np).cuda().unsqueeze(0)
-
-                    # # LIDAR HACK
-                    # PROBLEM: For points that dont exist..i need to make it a uniform distribution!
-                    # NEED ALGO that finds 0 in mask and adds in a uniform dist?
-                    # soft_label_refined = soft_label_refined * depth_mask
-                    # print(depth_mask[0,100,100])
-                    # print(depthmap_truth_np[100,100])
-                    # print(soft_label_refined[0,:,100,100])
-                    # stop
-                    # dpv_fused = torch.exp(torch.log(dpv_pred) + torch.log(soft_label_refined.squeeze(0)))
-                    # dpv_fused = dpv_fused / torch.sum(dpv_fused, dim=0)
-                    # dpv_fused_depth = util.dpv_to_depthmap(dpv_fused.unsqueeze(0), d_candi, BV_log=False)
 
                     # Store
                     depthmap_truth_lc_np = (depthmap_truth_capped * plane_mask).squeeze(0).cpu().numpy()
