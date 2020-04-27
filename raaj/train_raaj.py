@@ -984,12 +984,37 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
         model_input_right["prev_output"] = None
 
     # Run Forward
-    BV_cur_left_array, BV_cur_refined_left = torch.nn.parallel.data_parallel(model, model_input_left, range(ngpu))
-    BV_cur_right_array, BV_cur_refined_right = torch.nn.parallel.data_parallel(model, model_input_right, range(ngpu))
+    BV_cur_left_array, BV_cur_refined_left_array, flow_left, flow_left_refined = torch.nn.parallel.data_parallel(model, model_input_left, range(ngpu))
+    BV_cur_right_array, BV_cur_refined_right_array, flow_right, flow_right_refined = torch.nn.parallel.data_parallel(model, model_input_right, range(ngpu))
 
-    # Flow Stuff?
-    # The model should also compute stuff for flow?
-    # Returning BV_cur_left_array contents and BV_cur_refined_left as zero tensor at start this will make it not run
+    # RGB Flow
+    def flow_rgb_comp(ibatch, flow, prev, curr):
+        flow_curr = flow[ibatch, 0:2, :, :].permute(1, 2, 0).unsqueeze(0)
+        pred = util.flowarp(prev, flow_curr)
+        return losses.rgb_loss(pred, curr)
+
+    flow_rgb_mul = 1.
+    flow_rgb_loss = 0.
+    flow_rgb_count = 0.
+    if flow_left is not None:
+        for ibatch in range(flow_left.shape[0]):
+            flow_rgb_count += 1.
+            rgb_left_refined_prev = model_input_left["rgb"][ibatch, 0, :, :, :].unsqueeze(0)
+            rgb_left_refined_curr = model_input_left["rgb"][ibatch, -1, :, :, :].unsqueeze(0)
+            rgb_right_refined_prev = model_input_right["rgb"][ibatch, 0, :, :, :].unsqueeze(0)
+            rgb_right_refined_curr = model_input_right["rgb"][ibatch, -1, :, :, :].unsqueeze(0)
+            rgb_left_prev = F.avg_pool2d(rgb_left_refined_prev, 4)
+            rgb_left_curr = F.avg_pool2d(rgb_left_refined_curr, 4)
+            rgb_right_prev = F.avg_pool2d(rgb_right_refined_prev, 4)
+            rgb_right_curr = F.avg_pool2d(rgb_right_refined_curr, 4)
+
+            # Losses
+            flow_rgb_loss += flow_rgb_comp(ibatch, flow_left, rgb_left_prev, rgb_left_curr)
+            flow_rgb_loss += flow_rgb_comp(ibatch, flow_right, rgb_right_prev, rgb_right_curr)
+            flow_rgb_loss += flow_rgb_comp(ibatch, flow_left_refined, rgb_left_refined_prev, rgb_left_refined_curr)
+            flow_rgb_loss += flow_rgb_comp(ibatch, flow_right_refined, rgb_right_refined_prev, rgb_right_refined_curr)
+
+    # Depth Flow
 
 
     # NLL Loss for Low Res
@@ -1020,34 +1045,39 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
                                                                    BV_log=True)
 
     # NLL Loss for High Res
-    for ibatch in range(BV_cur_refined_left.shape[0]):
-        ce_count += 1
-        if not softce:
-            # Left Losses
-            ce_loss = ce_loss + F.nll_loss(BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
-                                           gt_input_left["dmap_imgsize_digits"][ibatch, :, :].unsqueeze(0),
-                                           ignore_index=0)
-            # Right Losses
-            ce_loss = ce_loss + F.nll_loss(BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0),
-                                           gt_input_right["dmap_imgsize_digits"][ibatch, :, :].unsqueeze(0),
-                                           ignore_index=0)
-        else:
-            # Left Losses
-            ce_loss = ce_loss + losses.soft_cross_entropy_loss(
-                gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0),
-                BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
-                mask=gt_input_left["masks_imgsizes"][ibatch, :, :, :],
-                BV_log=True)
-            # Right Losses
-            ce_loss = ce_loss + losses.soft_cross_entropy_loss(
-                gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0),
-                BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0),
-                mask=gt_input_right["masks_imgsizes"][ibatch, :, :, :],
-                BV_log=True)
+    for ind in range(len(BV_cur_refined_left_array)):
+        BV_cur_refined_left = BV_cur_refined_left_array[ind]
+        BV_cur_refined_right = BV_cur_refined_right_array[ind]
+        for ibatch in range(BV_cur_refined_left.shape[0]):
+            ce_count += 1
+            if not softce:
+                # Left Losses
+                ce_loss = ce_loss + F.nll_loss(BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
+                                               gt_input_left["dmap_imgsize_digits"][ibatch, :, :].unsqueeze(0),
+                                               ignore_index=0)
+                # Right Losses
+                ce_loss = ce_loss + F.nll_loss(BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0),
+                                               gt_input_right["dmap_imgsize_digits"][ibatch, :, :].unsqueeze(0),
+                                               ignore_index=0)
+            else:
+                # Left Losses
+                ce_loss = ce_loss + losses.soft_cross_entropy_loss(
+                    gt_input_left["soft_labels_imgsize"][ibatch].unsqueeze(0),
+                    BV_cur_refined_left[ibatch, :, :, :].unsqueeze(0),
+                    mask=gt_input_left["masks_imgsizes"][ibatch, :, :, :],
+                    BV_log=True)
+                # Right Losses
+                ce_loss = ce_loss + losses.soft_cross_entropy_loss(
+                    gt_input_right["soft_labels_imgsize"][ibatch].unsqueeze(0),
+                    BV_cur_refined_right[ibatch, :, :, :].unsqueeze(0),
+                    mask=gt_input_right["masks_imgsizes"][ibatch, :, :, :],
+                    BV_log=True)
 
     # Get Last BV_cur
     BV_cur_left = BV_cur_left_array[-1]
     BV_cur_right = BV_cur_right_array[-1]
+    BV_cur_refined_left = BV_cur_refined_left_array[-1]
+    BV_cur_refined_right = BV_cur_refined_right_array[-1]
 
     # Regress all depthmaps once here
     small_dm_left_arr = []
@@ -1178,18 +1208,33 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
         # Right
         smooth_loss = smooth_loss + losses.edge_aware_smoothness_loss([depth_up_right], rgb_up_right, 1)
 
-    # Backward
+    # All Loss
+    loss = torch.tensor(0.).cuda()
+
+    # Depth Losses
     bsize = torch.tensor(float(BV_cur_left.shape[0] * 2)).cuda()
+    if bsize != 0:
+        ce_loss = (ce_loss / ce_count) * 1.
+        dsc_loss = (dsc_loss / bsize) * dsc_mul
+        dc_loss = (dc_loss / bsize) * dc_mul
+        rsc_loss = (rsc_loss / bsize) * rsc_mul
+        rsc_low_loss = (rsc_low_loss / bsize) * rsc_low_mul
+        smooth_loss = (smooth_loss / bsize) * smooth_mul
+        loss += (ce_loss + dsc_loss + dc_loss + rsc_loss + rsc_low_loss + smooth_loss)
+
+    # Flow Losses
+    if flow_left is not None:
+        flow_rgb_loss = (flow_rgb_loss / flow_rgb_count) * flow_rgb_mul
+        loss += (flow_rgb_loss)
+
+    # Step
     optimizer_KV.zero_grad()
-    ce_loss = (ce_loss / ce_count) * 1.
-    dsc_loss = (dsc_loss / bsize) * dsc_mul
-    dc_loss = (dc_loss / bsize) * dc_mul
-    rsc_loss = (rsc_loss / bsize) * rsc_mul
-    rsc_low_loss = (rsc_low_loss / bsize) * rsc_low_mul
-    smooth_loss = (smooth_loss / bsize) * smooth_mul
-    loss = ce_loss + dsc_loss + dc_loss + rsc_loss + rsc_low_loss + smooth_loss
     loss.backward()
     optimizer_KV.step()
+
+    # Return
+    return {"loss": loss.detach().cpu().numpy(), "BV_cur_left": BV_cur_left, "BV_cur_right": BV_cur_right}
+
 
     # Debug Viz (comment if needed)
     if total_iter % 10 == -1:
@@ -1219,10 +1264,6 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
         cv2.waitKey(15)
     else:
         cv2.waitKey(15)
-
-    # Return
-    return {"loss": ce_loss.detach().cpu().numpy(), "BV_cur_left": BV_cur_left.detach(), "BV_cur_right": BV_cur_right.detach()}
-
 
 if __name__ == '__main__':
     try:

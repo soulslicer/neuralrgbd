@@ -393,6 +393,115 @@ class RefineNet_DPV_upsample(nn.Module):
             weights_np = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
             m.weight.data.copy_(torch.from_numpy(weights_np))
 
+class FlowNet_DPV_upsample(nn.Module):
+    '''
+    The refinement taking the DPV, using the D dimension as the feature dimension, plus the image features,
+    then upsample the DPV (4 time the input dpv resolution)
+    '''
+
+    def __init__(self, C0, C1, C2, D=64, upsample_D=False):
+        '''
+        Inputs:
+
+        C0 - feature channels in .25 image resolution feature,
+        C1 - feature cnahnels in .5 image resolution feature,
+        C2 - feature cnahnels in 1 image resolution feature,
+
+        D - the length of d_candi, we will treat the D dimension as the feature dimension
+        upsample_D - if upsample in the D dimension
+        '''
+        super(FlowNet_DPV_upsample, self).__init__()
+        in_channels = D + C0
+
+        if upsample_D:
+            D0 = 2 * D
+            D1 = 2 * D0
+        else:
+            D0 = D
+            D1 = D
+
+        self.conv0 = m_submodule.conv2d_leakyRelu(
+            ch_in=in_channels, ch_out=in_channels, kernel_size=3, stride=1, pad=1, use_bias=True)
+
+        self.conv0_1 = m_submodule.conv2d_leakyRelu(
+            ch_in=in_channels, ch_out=in_channels, kernel_size=3, stride=1, pad=1, use_bias=True)
+
+        self.trans_conv0 = m_submodule.conv2dTranspose_leakyRelu(
+            ch_in=in_channels, ch_out=D0, kernel_size=4, stride=2, pad=1, use_bias=True)
+
+        self.conv1 = m_submodule.conv2d_leakyRelu(
+            ch_in=D0 + C1, ch_out=D0 + C1, kernel_size=3, stride=1, pad=1, use_bias=True)
+
+        self.conv1_1 = m_submodule.conv2d_leakyRelu(
+            ch_in=D0 + C1, ch_out=D0 + C1, kernel_size=3, stride=1, pad=1, use_bias=True)
+
+        self.trans_conv1 = m_submodule.conv2dTranspose_leakyRelu(
+            ch_in=D0 + C1, ch_out=D1, kernel_size=4, stride=2, pad=1, use_bias=True)
+
+        self.conv2 = m_submodule.conv2d_leakyRelu(
+            ch_in=D1 + C2, ch_out=D1 + C2, kernel_size=3, stride=1, pad=1, use_bias=True)
+
+        self.conv2_1 = m_submodule.conv2d_leakyRelu(
+            ch_in=D1 + C2, ch_out=D1, kernel_size=3, stride=1, pad=1, use_bias=True)
+
+        self.conv2_2 = nn.Conv2d(D1, D1, kernel_size=3, stride=1, padding=1, bias=True)
+
+        self.apply(self.weight_init)
+
+    def forward(self, dpv_raw, img_features):
+        '''
+        dpv_raw - the low resolution (.25 image size) dpv (N D H W)
+        img_features - list of image features [ .25 image size, .5 image size, 1 image size]
+
+        NOTE:
+        dpv_raw from 0, 1 (need to exp() if in log scale)
+
+        output dpv in log-scale
+        '''
+
+        conv0_out = self.conv0(torch.cat([dpv_raw, img_features[0]], dim=1))
+        conv0_1_out = self.conv0_1(conv0_out)
+
+        trans_conv0_out = self.trans_conv0(conv0_1_out)
+
+        conv1_out = self.conv1(torch.cat([trans_conv0_out, img_features[1]], dim=1))
+        conv1_1_out = self.conv1_1(conv1_out)
+
+        trans_conv1_out = self.trans_conv1(conv1_1_out)
+        conv2_out = self.conv2(torch.cat([trans_conv1_out, img_features[2]], dim=1))
+        conv2_1_out = self.conv2_1(conv2_out)
+        conv2_2_out = self.conv2_2(conv2_1_out)
+
+        # normalization, assuming input dpv is in the log scale
+        #dpv_refined = F.log_softmax(conv2_2_out, dim=1)
+        dpv_refined = conv2_2_out
+
+        return dpv_refined
+
+    def weight_init(self, m):
+        if isinstance(m, nn.Conv2d):
+            print(' RefineNet_UNet2D: init conv2d')
+            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+            m.weight.data.normal_(0, math.sqrt(2. / n))
+        elif isinstance(m, nn.BatchNorm2d):
+            print(' init Batch2D')
+            m.weight.data.fill_(1)
+            m.bias.data.zero_()
+        elif isinstance(m, nn.Linear):
+            print(' init Linear')
+            m.bias.data.zero_()
+        elif isinstance(m, nn.ConvTranspose2d):
+            print(' init transposed 2d')
+            n = m.kernel_size[1]
+            factor = (n + 1) // 2
+            if n % 2 == 1:
+                center = factor - 1
+            else:
+                center = factor - .5
+
+            og = np.ogrid[:n, :n]
+            weights_np = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
+            m.weight.data.copy_(torch.from_numpy(weights_np))
 
 class RefineNet_Unet2D(nn.Module):
     '''

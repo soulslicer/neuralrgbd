@@ -62,6 +62,12 @@ class KVNET(nn.Module):
         self.modA = None
         self.modB = None
 
+        # Flow
+        self.flowA = None
+        self.flownet_upsample = submodels.FlowNet_DPV_upsample(
+                int(self.feature_dim), int(self.feature_dim/2), 3,
+                D = 3, upsample_D=self.if_upsample_d )
+
         # print #
         print('KV-Net initialization:')
 
@@ -81,14 +87,40 @@ class KVNET(nn.Module):
             # 64 in feature Dim depends on the command line arguments
             # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
 
-            # Should we just add the knet for some 3D Conv? or some version of it
-            BV_cur_array = [BV_cur]
-
             # Make sure size is still correct here!
-            BV_cur_refined = self.r_net(torch.exp(BV_cur_array[-1]), img_features=d_net_features)
+            BV_cur_refined = self.r_net(torch.exp(BV_cur), img_features=d_net_features)
             # [B,128,256,384]
 
-            return BV_cur_array, BV_cur_refined
+            return [BV_cur], [BV_cur_refined], None, None
+
+        elif self.nmode == "reupsample":
+
+            # Compute the cost volume and get features
+            BV_cur, cost_volumes, d_net_features = self.d_net(model_input)
+            d_net_features.append(model_input["rgb"][:,-1,:,:,:])
+            # 64 in feature Dim depends on the command line arguments
+            # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
+
+            # Make sure size is still correct here!
+            BV_cur_refined = self.r_net(torch.exp(BV_cur), img_features=d_net_features)
+            # [B,128,256,384]
+
+            # Downsample
+            dsize = [BV_cur_refined.shape[2]/4, BV_cur_refined.shape[3]/4]
+            BV_cur_downsampled = F.interpolate(BV_cur_refined, size=dsize, mode='nearest')
+
+            # Fuse?
+            BV_cur = torch.log(torch.clamp(torch.exp(BV_cur), util.epsilon, 1.))
+            BV_cur_downsampled = torch.log(torch.clamp(torch.exp(BV_cur_downsampled), util.epsilon, 1.))
+            fused_dpv = torch.exp(BV_cur + BV_cur_downsampled)
+            fused_dpv = fused_dpv / torch.sum(fused_dpv, dim=1).unsqueeze(1)
+            fused_dpv = torch.clamp(fused_dpv, util.epsilon, 1.)
+            BV_fused = torch.log(fused_dpv)
+
+            # Reupsample
+            BV_fused_refined = self.r_net(torch.exp(BV_fused), img_features=d_net_features)
+
+            return [BV_cur, BV_fused], [BV_cur_refined, BV_fused_refined], None, None
 
         elif self.nmode == "lhack":
 
@@ -120,7 +152,7 @@ class KVNET(nn.Module):
             BV_cur_refined = self.r_net(fused_dpv, img_features=d_net_features)
             # [B,128,256,384]
 
-            return [BV_cur], BV_cur_refined
+            return [BV_cur], [BV_cur_refined], None, None
 
         elif self.nmode == "irefine":
             # Variables
@@ -165,7 +197,7 @@ class KVNET(nn.Module):
             BV_cur_refined = self.r_net(torch.exp(BV_cur_array[-1]), img_features=d_net_features)
             # [B,128,256,384]
 
-            return BV_cur_array, BV_cur_refined
+            return BV_cur_array, BV_cur_refined, None, None
 
         elif self.nmode == "irefine_feedback":
             # Variables
@@ -196,7 +228,7 @@ class KVNET(nn.Module):
                 BV_cur_refined = self.r_net(torch.exp(BV_cur_array[-1]), img_features=d_net_features)
                 # [B,128,256,384]
 
-                return BV_cur_array, BV_cur_refined
+                return BV_cur_array, BV_cur_refined, None, None
 
             # Prev Output is nont None
             else:
@@ -232,7 +264,7 @@ class KVNET(nn.Module):
                 BV_cur_refined = self.r_net(torch.exp(BV_cur_array[-1]), img_features=d_net_features)
                 # [B,128,256,384]
 
-                return BV_cur_array, BV_cur_refined
+                return BV_cur_array, BV_cur_refined, None, None
 
         elif self.nmode == "stagerefine":
             # Compute the cost volume and get features
@@ -262,7 +294,9 @@ class KVNET(nn.Module):
             # Refine
             BV_cur_refined = self.r_net(torch.exp(dpv_b), img_features=d_net_features)
 
-            return [dpv_a, dpv_b], BV_cur_refined
+            return [dpv_a, dpv_b], BV_cur_refined, None, None
+
+            # ISSUE I THINK MODA WORKS FINE BUT MODB IS MAKING IT BAD
 
         elif self.nmode == "stagerefine2":
             # Compute the cost volume and get features
@@ -289,6 +323,35 @@ class KVNET(nn.Module):
             # Refine
             BV_cur_refined = self.r_net(torch.exp(dpv_a), img_features=d_net_features)
 
-            return [dpv_a], BV_cur_refined
+            return [dpv_a], BV_cur_refined, None, None
 
         # Some mechanism to refine from previous?
+
+        # Flow
+        elif self.nmode == "flow_a":
+            # Compute the cost volume and get features
+            _, cost_volumes, d_net_features = self.d_net(model_input)
+            d_net_features.append(model_input["rgb"][:,-1,:,:,:])
+
+            if self.flowA == None:
+                IN_C =  cost_volumes.shape[1]
+                OUT_C = len(self.d_candi)
+                self.flowA = ABlock3x3(IN_C, 3, OUT_C, OUT_C*2, C=4, BN=True).cuda()
+
+            # Flow
+            flow_a = self.flowA(cost_volumes)
+
+            # Upsample Flow
+            flow_upsampled = self.flownet_upsample(flow_a, d_net_features)
+
+            # Return
+            return [torch.zeros((0,1,1,1))], torch.zeros((0,1,1,1)), flow_a, flow_upsampled
+
+
+
+
+
+            pass
+
+
+        # I need a mechanism to make a reasoanble prediction

@@ -12,6 +12,17 @@ import cv2
 import util
 import inverse_warp as iv
 
+def rgb_loss(src_img, target_img, mask=None):
+    abs_map = (src_img - target_img).abs()  # [1, 3, 256, 384]
+    ssim_map = (0.5 * (1 - ssim(src_img, target_img))).clamp(0, 1)
+    diff_img = (0.15*abs_map + 0.85*ssim_map)
+    if mask == None:
+        mask = torch.ones((src_img.shape[2], src_img.shape[3])).cuda()
+        photo_error = mean_on_mask(diff_img, mask)
+    else:
+        photo_error = mean_on_mask(diff_img, mask)
+    return photo_error
+
 def rgb_stereo_consistency_loss(src_rgb_img, target_rgb_img, target_depth_map, pose_target2src, intr, viz=False):
     # Warp
     target_warped_rgb_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)

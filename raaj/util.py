@@ -144,6 +144,18 @@ def hack(cloud):
         fcloud[i] = cloud[i]
     return fcloud
 
+def flowarp(input, flowfield, mode='bilinear'):
+    gridfield = torch.zeros(flowfield.shape).to(input.device)
+    ax = torch.arange(0, input.shape[2]).float().to(input.device)
+    bx = torch.arange(0, input.shape[3]).float().to(input.device)
+    yv, xv = torch.meshgrid([ax, bx])
+    ystep = 2. / float(input.shape[2] - 1)
+    xstep = 2. / float(input.shape[3] - 1)
+    gridfield[0, :, :, 0] = -1 + xv * xstep - flowfield[0, :, :, 0] * xstep
+    gridfield[0, :, :, 1] = -1 + yv * ystep - flowfield[0, :, :, 1] * ystep
+    output = F.grid_sample(input, gridfield, mode=mode)
+    return output
+
 def transform_depth(depth, intr, transform):
     # torch.Size([2, 64, 96])
     # torch.Size([2, 3, 3])
@@ -226,7 +238,6 @@ def tocloud(depth, rgb, intr, extr=None, rgbr=None):
     all_together = np.concatenate([pts_numpy, pts_color, pts_normal], 0).astype(np.float32).T
     all_together = hack(all_together)
     return all_together
-
 
 def demean(input):
     input = input.detach().clone()
