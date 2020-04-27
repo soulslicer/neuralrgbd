@@ -294,7 +294,7 @@ class KVNET(nn.Module):
             # Refine
             BV_cur_refined = self.r_net(torch.exp(dpv_b), img_features=d_net_features)
 
-            return [dpv_a, dpv_b], BV_cur_refined, None, None
+            return [dpv_a, dpv_b], [BV_cur_refined], None, None
 
             # ISSUE I THINK MODA WORKS FINE BUT MODB IS MAKING IT BAD
 
@@ -323,14 +323,14 @@ class KVNET(nn.Module):
             # Refine
             BV_cur_refined = self.r_net(torch.exp(dpv_a), img_features=d_net_features)
 
-            return [dpv_a], BV_cur_refined, None, None
+            return [dpv_a], [BV_cur_refined], None, None
 
         # Some mechanism to refine from previous?
 
         # Flow
         elif self.nmode == "flow_a":
             # Compute the cost volume and get features
-            _, cost_volumes, d_net_features = self.d_net(model_input)
+            BV_cur, cost_volumes, d_net_features = self.d_net(model_input)
             d_net_features.append(model_input["rgb"][:,-1,:,:,:])
 
             if self.flowA == None:
@@ -344,8 +344,11 @@ class KVNET(nn.Module):
             # Upsample Flow
             flow_upsampled = self.flownet_upsample(flow_a, d_net_features)
 
+            # Other
+            BV_cur_refined = self.r_net(torch.exp(BV_cur), img_features=d_net_features)
+
             # Return
-            return [torch.zeros((0,1,1,1))], torch.zeros((0,1,1,1)), flow_a, flow_upsampled
+            return [BV_cur], [BV_cur_refined], flow_a, flow_upsampled
 
 
 

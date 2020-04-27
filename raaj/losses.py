@@ -23,6 +23,15 @@ def rgb_loss(src_img, target_img, mask=None):
         photo_error = mean_on_mask(diff_img, mask)
     return photo_error
 
+def depth_loss(src_depth, target_depth):
+    full_mask = (src_depth > 0) & (target_depth > 0)
+    target_depth = target_depth.clamp(min=1e-3)
+    src_depth = src_depth.clamp(min=1e-3)
+    diff_depth = ((target_depth - src_depth).abs() /
+                  (target_depth + src_depth).abs()).clamp(0, 1)
+    depth_error = mean_on_mask(diff_depth, full_mask)
+    return depth_error
+
 def rgb_stereo_consistency_loss(src_rgb_img, target_rgb_img, target_depth_map, pose_target2src, intr, viz=False):
     # Warp
     target_warped_rgb_img, valid_points = iv.inverse_warp(src_rgb_img, target_depth_map, pose_target2src, intr)

@@ -116,6 +116,8 @@ def main():
     parser.add_argument('--run_model', action='store_true', default=False)
     parser.add_argument('--load_args', action='store_true', default=False)
     parser.add_argument('--halflr', type=str, default="")
+    parser.add_argument('--flow_rgb_mul', type=float, default=1., help='')
+    parser.add_argument('--flow_depth_mul', type=float, default=1., help='')
 
     # hack_num = 326
     hack_num = 0
@@ -176,6 +178,8 @@ def main():
     ngpu = args.ngpu
     drefine = args.drefine
     halflr = [float(x) for x in args.halflr.split()]
+    flow_rgb_mul = args.flow_rgb_mul
+    flow_depth_mul = args.flow_depth_mul
 
     # Checks
     # if softce and not pytorch_scaling: raise('Soft CE needs Pytorch scaling to be turned on?')
@@ -317,7 +321,9 @@ def main():
         "rsc_mul": rsc_mul,
         "rsc_low_mul": rsc_low_mul,
         "smooth_mul": smooth_mul,
-        "pnoise": pnoise
+        "pnoise": pnoise,
+        "flow_rgb_mul": flow_rgb_mul,
+        "flow_depth_mul": flow_depth_mul,
     }
 
     # Evaluate Model Graph
@@ -465,12 +471,15 @@ def generate_model_input(local_info_valid, camside="left", softce=0, pnoise=0):
 
     # Keep to middle only
     midval = int(len(local_info_valid["src_dats"][0]) / 2)
+    preval = 0
 
     # Grab ground truth digitized map
     dmap_imgsize_digit_arr = []
     dmap_digit_arr = []
     dmap_imgsize_arr = []
     dmap_arr = []
+    dmap_imgsize_prev_arr = []
+    dmap_prev_arr = []
     for i in range(0, len(local_info_valid["src_dats"])):
         dmap_imgsize_digit = local_info_valid["src_dats"][i][midval][camside + "_camera"]["dmap_imgsize_digit"]
         dmap_imgsize_digit_arr.append(dmap_imgsize_digit)
@@ -480,10 +489,16 @@ def generate_model_input(local_info_valid, camside="left", softce=0, pnoise=0):
         dmap_digit_arr.append(dmap_digit)
         dmap_imgsize_arr.append(dmap_imgsize)
         dmap_arr.append(dmap)
+        dmap_imgsize_prev = local_info_valid["src_dats"][i][preval][camside + "_camera"]["dmap_imgsize"]
+        dmap_prev = local_info_valid["src_dats"][i][preval][camside + "_camera"]["dmap_raw"]
+        dmap_imgsize_prev_arr.append(dmap_imgsize_prev)
+        dmap_prev_arr.append(dmap_prev)
     dmap_imgsize_digits = torch.cat(dmap_imgsize_digit_arr)  # [B,256,384] uint64
     dmap_digits = torch.cat(dmap_digit_arr)  # [B,64,96] uint64
     dmap_imgsizes = torch.cat(dmap_imgsize_arr)
     dmaps = torch.cat(dmap_arr)
+    dmap_imgsizes_prev = torch.cat(dmap_imgsize_prev_arr)
+    dmaps_prev = torch.cat(dmap_prev_arr)
 
     intrinsics_arr = []
     intrinsics_up_arr = []
@@ -557,13 +572,18 @@ def generate_model_input(local_info_valid, camside="left", softce=0, pnoise=0):
         "d_candi": d_candi,
     }
 
+    # dmap_imgsizes_prev = torch.cat(dmap_imgsize_prev_arr)
+    # dmaps_prev = torch.cat(dmap_prev_arr)
+
     gt_input = {
         "masks_imgsizes": masks_imgsize.cuda(),
         "masks": masks.cuda(),
         "dmap_imgsize_digits": dmap_imgsize_digits.cuda(),
         "dmap_digits": dmap_digits.cuda(),
-        "dmap_imgsizes": dmap_imgsizes,
-        "dmaps": dmaps,
+        "dmap_imgsizes": dmap_imgsizes.cuda(),
+        "dmaps": dmaps.cuda(),
+        "dmap_imgsizes_prev": dmap_imgsizes_prev.cuda(),
+        "dmaps_prev": dmaps_prev.cuda(),
         "soft_labels_imgsize": soft_labels_imgsize,
         "soft_labels": soft_labels
     }
@@ -970,6 +990,8 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
     rsc_low_mul = addparams["rsc_low_mul"]
     smooth_mul = addparams["smooth_mul"]
     pnoise = addparams["pnoise"]
+    flow_rgb_mul = addparams["flow_rgb_mul"]
+    flow_depth_mul = addparams["flow_depth_mul"]
 
     # Create inputs
     model_input_left, gt_input_left = generate_model_input(local_info_valid, "left", softce, pnoise)
@@ -993,11 +1015,23 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
         pred = util.flowarp(prev, flow_curr)
         return losses.rgb_loss(pred, curr)
 
-    flow_rgb_mul = 1.
+    # Depth Flow
+    def flow_depth_comp(ibatch, flow, prev, curr):
+        # Issue, if the depth goes to zero, it becomes not even counted. can we stop this?
+        flow_2d = flow[ibatch, 0:2, :, :].permute(1, 2, 0).unsqueeze(0)
+        flow_z = flow[ibatch, 2, :, :]
+        pred = util.flowarp(prev, flow_2d) + flow_z
+        mask = (prev > 0) & (curr > 0)
+        pred = pred * mask.float()
+        return losses.depth_loss(pred, curr)
+
     flow_rgb_loss = 0.
     flow_rgb_count = 0.
+    flow_depth_loss = 0.
+    flow_depth_count = 0.
     if flow_left is not None:
         for ibatch in range(flow_left.shape[0]):
+            # RGB
             flow_rgb_count += 1.
             rgb_left_refined_prev = model_input_left["rgb"][ibatch, 0, :, :, :].unsqueeze(0)
             rgb_left_refined_curr = model_input_left["rgb"][ibatch, -1, :, :, :].unsqueeze(0)
@@ -1008,14 +1042,28 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
             rgb_right_prev = F.avg_pool2d(rgb_right_refined_prev, 4)
             rgb_right_curr = F.avg_pool2d(rgb_right_refined_curr, 4)
 
-            # Losses
+            # RGB Losses
             flow_rgb_loss += flow_rgb_comp(ibatch, flow_left, rgb_left_prev, rgb_left_curr)
             flow_rgb_loss += flow_rgb_comp(ibatch, flow_right, rgb_right_prev, rgb_right_curr)
             flow_rgb_loss += flow_rgb_comp(ibatch, flow_left_refined, rgb_left_refined_prev, rgb_left_refined_curr)
             flow_rgb_loss += flow_rgb_comp(ibatch, flow_right_refined, rgb_right_refined_prev, rgb_right_refined_curr)
 
-    # Depth Flow
+            # Depth
+            flow_depth_count += 1.
+            depth_left_refined_prev = gt_input_left["dmap_imgsizes_prev"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+            depth_left_refined_curr = gt_input_left["dmap_imgsizes"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+            depth_right_refined_prev = gt_input_right["dmap_imgsizes_prev"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+            depth_right_refined_curr = gt_input_right["dmap_imgsizes"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+            depth_left_prev = gt_input_left["dmaps_prev"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+            depth_left_curr = gt_input_left["dmaps"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+            depth_right_prev = gt_input_right["dmaps_prev"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+            depth_right_curr = gt_input_right["dmaps"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
 
+            # Depth Losses
+            flow_depth_loss += flow_depth_comp(ibatch, flow_left, depth_left_prev, depth_left_curr)
+            flow_depth_loss += flow_depth_comp(ibatch, flow_right, depth_right_prev, depth_right_curr)
+            flow_depth_loss += flow_depth_comp(ibatch, flow_left_refined, depth_left_refined_prev, depth_left_refined_curr)
+            flow_depth_loss += flow_depth_comp(ibatch, flow_right_refined, depth_right_refined_prev, depth_right_refined_curr)
 
     # NLL Loss for Low Res
     ce_loss = 0
@@ -1225,7 +1273,8 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
     # Flow Losses
     if flow_left is not None:
         flow_rgb_loss = (flow_rgb_loss / flow_rgb_count) * flow_rgb_mul
-        loss += (flow_rgb_loss)
+        flow_depth_loss = (flow_depth_loss / flow_depth_count) * flow_depth_mul
+        loss += (flow_rgb_loss + flow_depth_loss)
 
     # Step
     optimizer_KV.zero_grad()
