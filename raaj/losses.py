@@ -29,7 +29,7 @@ def depth_loss(src_depth, target_depth):
     src_depth = src_depth.clamp(min=1e-3)
     diff_depth = ((target_depth - src_depth).abs() /
                   (target_depth + src_depth).abs()).clamp(0, 1)
-    depth_error = mean_on_mask(diff_depth, full_mask)
+    depth_error = mean_on_mask(diff_depth, full_mask.float())
     return depth_error
 
 def rgb_stereo_consistency_loss(src_rgb_img, target_rgb_img, target_depth_map, pose_target2src, intr, viz=False):
