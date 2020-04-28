@@ -18,6 +18,7 @@ import torchvision
 import kitti
 import cv2
 import inverse_warp as iv
+import losses
 
 import deval.pyevaluatedepth_lib as dlib
 epsilon = torch.finfo(float).eps
@@ -143,6 +144,22 @@ def hack(cloud):
     for i in range(0, cloud.shape[0]):
         fcloud[i] = cloud[i]
     return fcloud
+
+# RGB Flow
+def flow_rgb_comp(ibatch, flow, prev, curr):
+    flow_curr = flow[ibatch, 0:2, :, :].permute(1, 2, 0).unsqueeze(0)
+    pred = flowarp(prev, flow_curr)
+    return losses.rgb_loss(pred, curr)
+
+# Depth Flow
+def flow_depth_comp(ibatch, flow, prev, curr):
+    # Issue, if the depth goes to zero, it becomes not even counted. can we stop this?
+    flow_2d = flow[ibatch, 0:2, :, :].permute(1, 2, 0).unsqueeze(0)
+    flow_z = flow[ibatch, 2, :, :]
+    pred = flowarp(prev, flow_2d) + flow_z
+    mask = (prev > 0) & (curr > 0)
+    pred = pred * mask.float()
+    return losses.depth_loss(pred, curr)
 
 def flowarp(input, flowfield, mode='bilinear'):
     gridfield = torch.zeros(flowfield.shape).to(input.device)

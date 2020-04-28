@@ -667,8 +667,9 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             # Stuff
             start = time.time()
             model_input["prev_output"] = prev_output
-            BV_cur_all_arr, BV_cur_refined_all = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
+            BV_cur_all_arr, BV_cur_refined_all_arr, flow, flow_refined = torch.nn.parallel.data_parallel(model, model_input, range(ngpu))
             BV_cur_all = BV_cur_all_arr[-1]
+            BV_cur_refined_all = BV_cur_refined_all_arr[-1]
             prev_output = BV_cur_all.detach()
             # print("Forward: " + str(time.time() - start))
 
@@ -720,6 +721,8 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 # Clamp the truth max depth
                 depthmap_truth_np[depthmap_truth_np >= d_candi[-1]] = d_candi[-1]
                 depthmap_truth_low_np[depthmap_truth_low_np >= d_candi[-1]] = d_candi[-1]
+
+                # Flow
 
                 # Error
                 errors = util.depthError(depthmap_predicted_np, depthmap_truth_np)
@@ -1009,22 +1012,6 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
     BV_cur_left_array, BV_cur_refined_left_array, flow_left, flow_left_refined = torch.nn.parallel.data_parallel(model, model_input_left, range(ngpu))
     BV_cur_right_array, BV_cur_refined_right_array, flow_right, flow_right_refined = torch.nn.parallel.data_parallel(model, model_input_right, range(ngpu))
 
-    # RGB Flow
-    def flow_rgb_comp(ibatch, flow, prev, curr):
-        flow_curr = flow[ibatch, 0:2, :, :].permute(1, 2, 0).unsqueeze(0)
-        pred = util.flowarp(prev, flow_curr)
-        return losses.rgb_loss(pred, curr)
-
-    # Depth Flow
-    def flow_depth_comp(ibatch, flow, prev, curr):
-        # Issue, if the depth goes to zero, it becomes not even counted. can we stop this?
-        flow_2d = flow[ibatch, 0:2, :, :].permute(1, 2, 0).unsqueeze(0)
-        flow_z = flow[ibatch, 2, :, :]
-        pred = util.flowarp(prev, flow_2d) + flow_z
-        mask = (prev > 0) & (curr > 0)
-        pred = pred * mask.float()
-        return losses.depth_loss(pred, curr)
-
     flow_rgb_loss = 0.
     flow_rgb_count = 0.
     flow_depth_loss = 0.
@@ -1043,10 +1030,10 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
             rgb_right_curr = F.avg_pool2d(rgb_right_refined_curr, 4)
 
             # RGB Losses
-            flow_rgb_loss += flow_rgb_comp(ibatch, flow_left, rgb_left_prev, rgb_left_curr)
-            flow_rgb_loss += flow_rgb_comp(ibatch, flow_right, rgb_right_prev, rgb_right_curr)
-            flow_rgb_loss += flow_rgb_comp(ibatch, flow_left_refined, rgb_left_refined_prev, rgb_left_refined_curr)
-            flow_rgb_loss += flow_rgb_comp(ibatch, flow_right_refined, rgb_right_refined_prev, rgb_right_refined_curr)
+            flow_rgb_loss += util.flow_rgb_comp(ibatch, flow_left, rgb_left_prev, rgb_left_curr)
+            flow_rgb_loss += util.flow_rgb_comp(ibatch, flow_right, rgb_right_prev, rgb_right_curr)
+            flow_rgb_loss += util.flow_rgb_comp(ibatch, flow_left_refined, rgb_left_refined_prev, rgb_left_refined_curr)
+            flow_rgb_loss += util.flow_rgb_comp(ibatch, flow_right_refined, rgb_right_refined_prev, rgb_right_refined_curr)
 
             # Depth
             flow_depth_count += 1.
@@ -1060,10 +1047,10 @@ def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, pr
             depth_right_curr = gt_input_right["dmaps"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
 
             # Depth Losses
-            flow_depth_loss += flow_depth_comp(ibatch, flow_left, depth_left_prev, depth_left_curr)
-            flow_depth_loss += flow_depth_comp(ibatch, flow_right, depth_right_prev, depth_right_curr)
-            flow_depth_loss += flow_depth_comp(ibatch, flow_left_refined, depth_left_refined_prev, depth_left_refined_curr)
-            flow_depth_loss += flow_depth_comp(ibatch, flow_right_refined, depth_right_refined_prev, depth_right_refined_curr)
+            flow_depth_loss += util.flow_depth_comp(ibatch, flow_left, depth_left_prev, depth_left_curr)
+            flow_depth_loss += util.flow_depth_comp(ibatch, flow_right, depth_right_prev, depth_right_curr)
+            flow_depth_loss += util.flow_depth_comp(ibatch, flow_left_refined, depth_left_refined_prev, depth_left_refined_curr)
+            flow_depth_loss += util.flow_depth_comp(ibatch, flow_right_refined, depth_right_refined_prev, depth_right_refined_curr)
 
     # NLL Loss for Low Res
     ce_loss = 0
