@@ -754,10 +754,10 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     depth_refined_curr = gt_input["dmap_imgsizes"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
                     depth_prev = gt_input["dmaps_prev"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
                     depth_curr = gt_input["dmaps"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
-                    flow_rgb_refined_sum += util.flow_rgb_comp(ibatch, flow_refined, rgb_refined_prev, rgb_refined_curr)
-                    flow_rgb_sum += util.flow_rgb_comp(ibatch, flow, rgb_prev, rgb_curr)
-                    flow_depth_refined_sum += util.flow_depth_comp(ibatch, flow_refined, depth_refined_prev, depth_refined_curr)
-                    flow_depth_sum += util.flow_depth_comp(ibatch, flow, depth_prev, depth_curr)
+                    flow_rgb_refined_sum += util.flow_rgb_comp(ibatch, flow_refined.detach(), rgb_refined_prev, rgb_refined_curr)
+                    flow_rgb_sum += util.flow_rgb_comp(ibatch, flow.detach(), rgb_prev, rgb_curr)
+                    flow_depth_refined_sum += util.flow_depth_comp(ibatch, flow_refined.detach(), depth_refined_prev, depth_refined_curr)
+                    flow_depth_sum += util.flow_depth_comp(ibatch, flow.detach(), depth_prev, depth_curr)
 
                 # # Test Transform
                 # transform = iv.pose_vec2mat_full(torch.Tensor([0., 0., 0., 0.0, 0.0, 0.]).unsqueeze(0).repeat(2,1)).cuda()
