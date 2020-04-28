@@ -63,7 +63,7 @@ class KVNET(nn.Module):
         self.modB = None
 
         # Flow
-        self.flowA = None
+        self.flowA = ABlock3x3(int(self.feature_dim)*2, 3, 64, 64*4, C=4, BN=True).cuda()
         self.flownet_upsample = submodels.FlowNet_DPV_upsample(
                 int(self.feature_dim), int(self.feature_dim/2), 3,
                 D = 3, upsample_D=self.if_upsample_d )
@@ -82,7 +82,7 @@ class KVNET(nn.Module):
         if self.nmode == "default":
 
             # Compute the cost volume and get features
-            BV_cur, cost_volumes, d_net_features = self.d_net(model_input)
+            BV_cur, cost_volumes, d_net_features, _ = self.d_net(model_input)
             d_net_features.append(model_input["rgb"][:,-1,:,:,:])
             # 64 in feature Dim depends on the command line arguments
             # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
@@ -96,7 +96,7 @@ class KVNET(nn.Module):
         elif self.nmode == "reupsample":
 
             # Compute the cost volume and get features
-            BV_cur, cost_volumes, d_net_features = self.d_net(model_input)
+            BV_cur, cost_volumes, d_net_features, _ = self.d_net(model_input)
             d_net_features.append(model_input["rgb"][:,-1,:,:,:])
             # 64 in feature Dim depends on the command line arguments
             # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
@@ -125,7 +125,7 @@ class KVNET(nn.Module):
         elif self.nmode == "lhack":
 
             # Compute the cost volume and get features
-            BV_cur, cost_volumes, d_net_features = self.d_net(model_input)
+            BV_cur, cost_volumes, d_net_features, _ = self.d_net(model_input)
             d_net_features.append(model_input["rgb"][:,-1,:,:,:])
             # 64 in feature Dim depends on the command line arguments
             # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
@@ -165,7 +165,7 @@ class KVNET(nn.Module):
                 self.kv_net = submodels.KV_NET_BASIC(kvnet_size, dres_count = 2, feature_dim = 32).cuda()
 
             # Compute the cost volume and get features
-            BV_cur_base, cost_volumes, d_net_features = self.d_net(model_input)
+            BV_cur_base, cost_volumes, d_net_features, _ = self.d_net(model_input)
             d_net_features.append(model_input["rgb"][:,-1,:,:,:])
             # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
 
@@ -210,7 +210,7 @@ class KVNET(nn.Module):
                 self.kv_net = submodels.KV_NET_BASIC(kvnet_size, dres_count = 2, feature_dim = 32).cuda()
 
             # Compute the cost volume and get features
-            BV_cur_base, cost_volumes, d_net_features = self.d_net(model_input)
+            BV_cur_base, cost_volumes, d_net_features, _ = self.d_net(model_input)
             d_net_features.append(model_input["rgb"][:,-1,:,:,:])
             # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
 
@@ -266,92 +266,25 @@ class KVNET(nn.Module):
 
                 return BV_cur_array, BV_cur_refined, None, None
 
-        elif self.nmode == "stagerefine":
-            # Compute the cost volume and get features
-            _, cost_volumes, d_net_features = self.d_net(model_input)
-            d_net_features.append(model_input["rgb"][:,-1,:,:,:])
-
-            # To Test
-            # Add or log
-            # BN=True
-            # Mess with the *2
-            # 3D Conv for the modB?
-            # Test with BS of 4??
-
-            # Setup Network
-            if self.modA == None:
-                IN_C =  cost_volumes.shape[1]
-                OUT_C = len(self.d_candi)
-                self.modA = ABlock3x3(IN_C, OUT_C, OUT_C, OUT_C*2, C=4, BN=False).cuda()
-                self.modB = ABlock3x3(IN_C, OUT_C, OUT_C, OUT_C*2, C=6, BN=False).cuda()
-
-            # Two stage
-            out_a = self.modA(cost_volumes)
-            dpv_a = F.log_softmax(out_a, dim=1)
-            out_b = self.modB(cost_volumes + torch.exp(dpv_a)) # Should we pass the log version?
-            dpv_b = F.log_softmax(out_b, dim=1)
-
-            # Refine
-            BV_cur_refined = self.r_net(torch.exp(dpv_b), img_features=d_net_features)
-
-            return [dpv_a, dpv_b], [BV_cur_refined], None, None
-
-            # ISSUE I THINK MODA WORKS FINE BUT MODB IS MAKING IT BAD
-
-        elif self.nmode == "stagerefine2":
-            # Compute the cost volume and get features
-            _, cost_volumes, d_net_features = self.d_net(model_input)
-            d_net_features.append(model_input["rgb"][:,-1,:,:,:])
-
-            # To Test
-            # Add or log
-            # BN=True
-            # Mess with the *2
-            # 3D Conv for the modB?
-            # Test with BS of 4??
-
-            # Setup Network
-            if self.modA == None:
-                IN_C =  cost_volumes.shape[1]
-                OUT_C = len(self.d_candi)
-                self.modA = ABlock3x3(IN_C, OUT_C, OUT_C, OUT_C*2, C=4, BN=True).cuda()
-
-            # Two stage
-            out_a = self.modA(cost_volumes)
-            dpv_a = F.log_softmax(out_a, dim=1)
-
-            # Refine
-            BV_cur_refined = self.r_net(torch.exp(dpv_a), img_features=d_net_features)
-
-            return [dpv_a], [BV_cur_refined], None, None
-
-        # Some mechanism to refine from previous?
-
         # Flow
-        elif self.nmode == "flow_a":
+        elif self.nmode == "flow_b":
             # Compute the cost volume and get features
-            BV_cur, cost_volumes, d_net_features = self.d_net(model_input)
-            d_net_features.append(model_input["rgb"][:,-1,:,:,:])
-
-            if self.flowA == None:
-                IN_C =  cost_volumes.shape[1]
-                OUT_C = len(self.d_candi)
-                self.flowA = ABlock3x3(IN_C, 3, OUT_C, OUT_C*2, C=4, BN=True).cuda()
+            BV_cur, cost_volumes, last_features, first_features = self.d_net(model_input)
+            last_features.append(model_input["rgb"][:,-1,:,:,:])
+            first_features.append(model_input["rgb"][:,0,:,:,:])
 
             # Flow
-            flow_a = self.flowA(cost_volumes)
+            flow_input = torch.cat([first_features[0], last_features[0]], dim=1)
+            flow_a = self.flowA(flow_input)
 
             # Upsample Flow
-            flow_upsampled = self.flownet_upsample(flow_a, d_net_features)
+            flow_upsampled = self.flownet_upsample(flow_a, last_features)
 
             # Other
-            BV_cur_refined = self.r_net(torch.exp(BV_cur), img_features=d_net_features)
+            BV_cur_refined = self.r_net(torch.exp(BV_cur), img_features=last_features)
 
             # Return
             return [BV_cur], [BV_cur_refined], flow_a, flow_upsampled
-
-
-
 
 
             pass

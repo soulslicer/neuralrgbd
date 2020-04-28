@@ -282,7 +282,9 @@ class D_NET_BASIC(nn.Module):
             BV = F.softmax(costv_out2, dim=1)
 
         # Return BV and primary image features (in the future return others too for flow?)
-        return BV, cost_volumes, [feat_imgs_all[:,-1,:-3, :,:], feat_imgs_layer_1[:,-1,:,:,:]]
+        last_features = [feat_imgs_all[:,-1,:-3, :,:], feat_imgs_layer_1[:,-1,:,:,:]]
+        first_features = [feat_imgs_all[:,0,:-3, :,:], feat_imgs_layer_1[:,0,:,:,:]]
+        return BV, cost_volumes, last_features, first_features
 
 class RefineNet_DPV_upsample(nn.Module):
     '''

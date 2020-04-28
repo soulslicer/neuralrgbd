@@ -686,8 +686,6 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             prev_output = BV_cur_all.detach()
             # print("Forward: " + str(time.time() - start))
 
-            print("--")
-
             # Truth
             depthmap_truth_all = gt_input["dmap_imgsizes"]  # [1,256,384]
             depthmap_truth_low_all = gt_input["dmaps"]  # [1,256,384]
@@ -758,6 +756,12 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                     flow_rgb_sum += util.flow_rgb_comp(ibatch, flow.detach(), rgb_prev, rgb_curr)
                     flow_depth_refined_sum += util.flow_depth_comp(ibatch, flow_refined.detach(), depth_refined_prev, depth_refined_curr)
                     flow_depth_sum += util.flow_depth_comp(ibatch, flow.detach(), depth_prev, depth_curr)
+                    #rgbimg = util.torchrgb_to_cv2(left_rgb.squeeze(0))
+                    #flowviz = flow_refined[ibatch, 0:2, :, :].permute(1, 2, 0).detach().cpu().numpy()
+                    #disp = util.flow_to_img(flowviz, rgbimg)
+                    #cv2.imshow("rgbimg", rgbimg)
+                    #cv2.imshow("disp", disp)
+                    #cv2.waitKey(15)
 
                 # # Test Transform
                 # transform = iv.pose_vec2mat_full(torch.Tensor([0., 0., 0., 0.0, 0.0, 0.]).unsqueeze(0).repeat(2,1)).cuda()

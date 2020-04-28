@@ -149,7 +149,28 @@ def hack(cloud):
 def flow_rgb_comp(ibatch, flow, prev, curr):
     flow_curr = flow[ibatch, 0:2, :, :].permute(1, 2, 0).unsqueeze(0)
     pred = flowarp(prev, flow_curr)
+    # cv2.imshow("prev", torchrgb_to_cv2(prev.squeeze(0)))
+    # cv2.imshow("curr", torchrgb_to_cv2(curr.squeeze(0)))
+    # cv2.imshow("pred", torchrgb_to_cv2(pred.squeeze(0)))
+    # cv2.imshow("flox", np.abs(flow_curr[0,:,:,0].cpu().numpy())*50)
+    # cv2.imshow("diff", np.abs(torchrgb_to_cv2(pred.squeeze(0)) - torchrgb_to_cv2(curr.squeeze(0))))
+    # cv2.waitKey(0)
     return losses.rgb_loss(pred, curr)
+
+def flow_to_img(flow, img):
+    # Create mask
+    mask = np.zeros_like(img)
+    # Sets image saturation to maximum
+    mask[..., 1] = 255
+    # Compute the magnitude and angle of the 2D vectors
+    magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+    # Set image hue according to the optical flow direction
+    mask[..., 0] = angle * 180 / np.pi / 2
+    # Set image value according to the optical flow magnitude (normalized)
+    mask[..., 2] = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX)
+    # Convert HSV to RGB (BGR) color representation
+    rgb = cv2.cvtColor(mask, cv2.COLOR_HSV2BGR)
+    return rgb
 
 # Depth Flow
 def flow_depth_comp(ibatch, flow, prev, curr):
