@@ -100,6 +100,40 @@ class ABlock3x3(torch.nn.Module):
     def forward(self, x):
         return self.net(x)
 
+class SimpleBlockA(torch.nn.Module):
+    def __init__(self, In_D, Out_D, Depth=64, C=3, mode="default"):
+        """
+        In the constructor we instantiate two nn.Linear modules and assign them as
+        member variables.
+        """
+        super(SimpleBlockA, self).__init__()
+        import m_submodule
+
+        modules = []
+        if mode == "default":
+            for i in range(0, C):
+                modules.append(m_submodule.conv2d_leakyRelu(
+                        ch_in = In_D, ch_out = Depth, kernel_size=3, stride=1, pad=1, use_bias=True) )
+            modules.append(nn.Conv2d(Depth, Out_D, 3, 1, 1))
+
+        self.net = nn.Sequential(
+            *modules
+        )
+        self.apply(self.weight_init)
+
+    def weight_init(self, m):
+        if isinstance(m, nn.Conv2d):
+            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+            m.weight.data.normal_(0, math.sqrt(2. / n))
+        elif isinstance(m, nn.BatchNorm2d):
+            m.weight.data.fill_(1)
+            m.bias.data.zero_()
+        elif isinstance(m, nn.Linear):
+            m.bias.data.zero_()
+
+    def forward(self, x):
+        return self.net(x)
+
 class BasicBlock(nn.Module):
     expansion = 1
     def __init__(self, inplanes, planes, stride, downsample, pad, dilation, bn_running_avg = False):

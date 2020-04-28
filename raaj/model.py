@@ -68,6 +68,9 @@ class KVNET(nn.Module):
                 int(self.feature_dim), int(self.feature_dim/2), 3,
                 D = 3, upsample_D=self.if_upsample_d )
 
+        # Other
+        self.simpleA = SimpleBlockA(In_D=len(self.d_candi), Out_D=len(self.d_candi), Depth=64, C=2, mode="default")
+
         # print #
         print('KV-Net initialization:')
 
@@ -92,6 +95,24 @@ class KVNET(nn.Module):
             # [B,128,256,384]
 
             return [BV_cur], [BV_cur_refined], None, None
+
+        elif self.nmode == "defaultrefine":
+
+            # Compute the cost volume and get features
+            BV_cur, cost_volumes, d_net_features, _ = self.d_net(model_input)
+            d_net_features.append(model_input["rgb"][:,-1,:,:,:])
+            # 64 in feature Dim depends on the command line arguments
+            # [B, 128, 64, 96] - has log on it [[B,64,64,96] [B,32,128,192] [B,3,256,384]]
+
+            # Add Block
+            sa_output = self.simpleA(BV_cur)
+            BV_cur_mod = F.log_softmax(sa_output, dim=1)
+
+            # Make sure size is still correct here!
+            BV_cur_refined = self.r_net(torch.exp(BV_cur_mod), img_features=d_net_features)
+            # [B,128,256,384]
+
+            return [BV_cur, BV_cur_mod], [BV_cur_refined], None, None
 
         elif self.nmode == "reupsample":
 
