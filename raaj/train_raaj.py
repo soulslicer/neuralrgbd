@@ -340,13 +340,18 @@ def main():
             "sil_low": [],
             "rsc": [],
             "smooth": [],
-            "dc": []
+            "dc": [],
+            "flow_rgb_refined_sum": [],
+            "flow_depth_refined_sum": [],
+            "flow_rgb_sum": [],
+            "flow_depth_sum": []
         }
         for file in all_files:
             print(file)
             util.load_pretrained_model(model_KVnet, file, None)
-            results, results_low, rsc, smooth, dc = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, addparams,
+            results, results_low, rsc, smooth, dc, flow = testing(model_KVnet, btest, d_candi, d_candi_up, ngpu, addparams,
                                                             None, None)
+            # [flow_rgb_refined_sum, flow_depth_refined_sum, flow_rgb_sum, flow_depth_sum]
             foutput["rmse"].append(results["rmse"][0]);
             foutput["rmse_low"].append(results_low["rmse"][0]);
             foutput["sil"].append(results["scale invariant log"][0]);
@@ -354,6 +359,10 @@ def main():
             foutput["rsc"].append(float(rsc))
             foutput["smooth"].append(float(smooth))
             foutput["dc"].append(float(dc))
+            foutput["flow_rgb_refined_sum"].append(float(flow[0]))
+            foutput["flow_depth_refined_sum"].append(float(flow[1]))
+            foutput["flow_rgb_sum"].append(float(flow[2]))
+            foutput["flow_depth_sum"].append(float(flow[3]))
         print("RMSES")
         print(foutput["rmse"])
         print("SILS")
@@ -599,6 +608,10 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
     rsc_sum = 0.
     dc_sum = 0.
     smooth_sum = 0.
+    flow_rgb_refined_sum = 0.
+    flow_depth_refined_sum = 0.
+    flow_rgb_sum = 0.
+    flow_depth_sum = 0.
     counter = 0.
     start = time.time()
     softce = addparams["softce"]
@@ -673,6 +686,8 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
             prev_output = BV_cur_all.detach()
             # print("Forward: " + str(time.time() - start))
 
+            print("--")
+
             # Truth
             depthmap_truth_all = gt_input["dmap_imgsizes"]  # [1,256,384]
             depthmap_truth_low_all = gt_input["dmaps"]  # [1,256,384]
@@ -715,20 +730,34 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
                 # Generate Numpy
                 depthmap_predicted_np = (depthmap_predicted * depth_mask).squeeze(0).cpu().numpy()
                 depthmap_predicted_low_np = (depthmap_low_predicted * depth_mask_low).squeeze(0).cpu().numpy()
-                depthmap_truth_np = (depthmap_truth * depth_mask.cpu()).squeeze(0).cpu().numpy()
-                depthmap_truth_low_np = (depthmap_truth_low * depth_mask_low.cpu()).squeeze(0).cpu().numpy()
+                depthmap_truth_np = (depthmap_truth * depth_mask).squeeze(0).cpu().numpy()
+                depthmap_truth_low_np = (depthmap_truth_low * depth_mask_low).squeeze(0).cpu().numpy()
 
                 # Clamp the truth max depth
                 depthmap_truth_np[depthmap_truth_np >= d_candi[-1]] = d_candi[-1]
                 depthmap_truth_low_np[depthmap_truth_low_np >= d_candi[-1]] = d_candi[-1]
-
-                # Flow
 
                 # Error
                 errors = util.depthError(depthmap_predicted_np, depthmap_truth_np)
                 errors_low = util.depthError(depthmap_predicted_low_np, depthmap_truth_low_np)
                 all_errors.append(errors)
                 all_errors_low.append(errors_low)
+
+                # Flow
+                if flow is not None:
+                    ibatch = b
+                    rgb_refined_prev = model_input["rgb"][ibatch, 0, :, :, :].unsqueeze(0)
+                    rgb_refined_curr = model_input["rgb"][ibatch, -1, :, :, :].unsqueeze(0)
+                    rgb_prev = F.avg_pool2d(rgb_refined_prev, 4)
+                    rgb_curr = F.avg_pool2d(rgb_refined_curr, 4)
+                    depth_refined_prev = gt_input["dmap_imgsizes_prev"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+                    depth_refined_curr = gt_input["dmap_imgsizes"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+                    depth_prev = gt_input["dmaps_prev"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+                    depth_curr = gt_input["dmaps"][ibatch, :, :].unsqueeze(0).unsqueeze(0)
+                    flow_rgb_refined_sum += util.flow_rgb_comp(ibatch, flow_refined, rgb_refined_prev, rgb_refined_curr)
+                    flow_rgb_sum += util.flow_rgb_comp(ibatch, flow, rgb_prev, rgb_curr)
+                    flow_depth_refined_sum += util.flow_depth_comp(ibatch, flow_refined, depth_refined_prev, depth_refined_curr)
+                    flow_depth_sum += util.flow_depth_comp(ibatch, flow, depth_prev, depth_curr)
 
                 # # Test Transform
                 # transform = iv.pose_vec2mat_full(torch.Tensor([0., 0., 0., 0.0, 0.0, 0.]).unsqueeze(0).repeat(2,1)).cuda()
@@ -976,8 +1005,12 @@ def testing(model, btest, d_candi, d_candi_up, ngpu, addparams, visualizer, ligh
     rsc_sum /= counter
     smooth_sum /= counter
     dc_sum /= counter
-    return results, results_low, rsc_sum, smooth_sum, dc_sum
-
+    flow_rgb_refined_sum /= counter
+    flow_depth_refined_sum /= counter
+    flow_rgb_sum /= counter
+    flow_depth_sum /= counter
+    flow_errors = [flow_rgb_refined_sum, flow_depth_refined_sum, flow_rgb_sum, flow_depth_sum]
+    return results, results_low, rsc_sum, smooth_sum, dc_sum, flow_errors
 
 def train(model, optimizer_KV, local_info_valid, ngpu, addparams, total_iter, prev_output, visualizer, lightcurtain):
     # start = time.time()
