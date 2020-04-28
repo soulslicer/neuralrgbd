@@ -286,6 +286,8 @@ class KVNET(nn.Module):
             # Return
             return [BV_cur], [BV_cur_refined], flow_a, flow_upsampled
 
+            #return [torch.zeros((0))], [torch.zeros((0))], flow_a, flow_upsampled
+
 
             pass
 
